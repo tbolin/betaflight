@@ -197,3 +197,7 @@ static inline float vector2Dot(const fpVector2_t *a, const fpVector2_t *b)
     return a->x * b->x + a->y * b->y;
 }
 
+static inline float vector3Dot(const fpVector3_t *a, const fpVector3_t *b)
+{
+    return a->x * b->x + a->y * b->y + a->z * b->z;
+}

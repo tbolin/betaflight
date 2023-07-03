@@ -247,10 +247,23 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt,
         ay *= recipAccNorm;
         az *= recipAccNorm;
 
+        fpVector3_t acc_upp = {.x = ax, .y = ay, .z = az};
+        fpVector3_t est_upp = {.x = rMat[2][0], .y = rMat[2][1], .z = rMat[2][2]};
+
         // Error is sum of cross product between estimated direction and measured direction of gravity
-        ex += (ay * rMat[2][2] - az * rMat[2][1]);
-        ey += (az * rMat[2][0] - ax * rMat[2][2]);
-        ez += (ax * rMat[2][1] - ay * rMat[2][0]);
+        fpVector3_t acc_err;
+        vectorCrossProduct(&acc_err, &acc_upp, &est_upp);
+
+        const float dot = vector3Dot(&acc_upp, &est_upp);
+
+        // To avoid the gain decreasing for angles > 90 degrees:
+        // set magnitude of error vector to 1 + |cos| of angle between estimated
+        // and measured downwards vectors if the absolute angle of the error is > 90 degrees
+        acc_err = (dot > 0) ? acc_err : *vectorScale(&acc_err, vectorNormalize(&acc_err, &acc_err), 1.0f - dot);
+
+        ex += acc_err.x;
+        ey += acc_err.y;
+        ez += acc_err.z;
     }
 
     // Compute and apply integral feedback if enabled
