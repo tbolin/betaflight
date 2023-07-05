@@ -78,6 +78,7 @@ static FAST_DATA_ZERO_INIT timeUs_t yawSpinTimeUs;
 #endif
 
 static FAST_DATA_ZERO_INIT float gyroFilteredDownsampled[XYZ_AXIS_COUNT];
+static float gyroDurationSpentSaturated = 0.0f;
 
 static FAST_DATA_ZERO_INIT int16_t gyroSensorTemperature;
 
@@ -536,6 +537,16 @@ FAST_CODE void gyroFiltering(timeUs_t currentTimeUs)
             gyroFilteredDownsampled[axis] = pt1FilterApply(&gyro.imuGyroFilter[axis], gyro.gyroADCf[axis]);
         }
     }
+    // consider gyro saturated if abs rate exceeds 1950 deg/s
+    // exactly 2000 degrees would be better, but gyroADC includes a zeroing offset
+    // so the gyro might saturate at lower levels
+    static const float saturationLimit = 1950.0f;
+    if (fabsf(gyro.gyroADC[X]) > saturationLimit ||
+        fabsf(gyro.gyroADC[Y]) > saturationLimit ||
+        fabsf(gyro.gyroADC[Z]) > saturationLimit ||
+        overflowDetected) {
+        gyroDurationSpentSaturated += pidGetDT();
+    }
 
 #if !defined(USE_GYRO_OVERFLOW_CHECK) && !defined(USE_YAW_SPIN_RECOVERY)
     UNUSED(currentTimeUs);
@@ -545,6 +556,15 @@ FAST_CODE void gyroFiltering(timeUs_t currentTimeUs)
 float gyroGetFilteredDownsampled(int axis)
 {
     return gyroFilteredDownsampled[axis];
+}
+
+float gyroGetDurationSpentSaturated(void)
+{
+    // used by imu to know if the gyro has been saturated
+    // should only be called from imu
+    const float duration = gyroDurationSpentSaturated;
+    gyroDurationSpentSaturated = 0.0f;
+    return duration;
 }
 
 int16_t gyroReadSensorTemperature(gyroSensor_t gyroSensor)

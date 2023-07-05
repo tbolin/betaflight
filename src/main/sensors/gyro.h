@@ -205,6 +205,7 @@ PG_DECLARE(gyroConfig_t, gyroConfig);
 void gyroUpdate(void);
 void gyroFiltering(timeUs_t currentTimeUs);
 float gyroGetFilteredDownsampled(int axis);
+float gyroGetDurationSpentSaturated(void);
 void gyroStartCalibration(bool isFirstArmingCalibration);
 bool isFirstArmingGyroCalibrationRunning(void);
 bool gyroIsCalibrationComplete(void);
