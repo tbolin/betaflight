@@ -592,6 +592,9 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
     UNUSED(canUseGPSHeading);
     UNUSED(imuCalcKpGain);
     UNUSED(imuCalcMagErr);
+    UNUSED(imuAccTrust);
+    UNUSED(imuCalcKpGain);
+    UNUSED(imuUpdateDeviation);
 
     UNUSED(currentTimeUs);
 }
