@@ -545,7 +545,7 @@ FAST_CODE void gyroFiltering(timeUs_t currentTimeUs)
         fabsf(gyro.gyroADC[Y]) > saturationLimit ||
         fabsf(gyro.gyroADC[Z]) > saturationLimit ||
         overflowDetected) {
-        gyroDurationSpentSaturated += pidGetDT();
+        gyroDurationSpentSaturated += gyro.sampleLooptime;
     }
 
 #if !defined(USE_GYRO_OVERFLOW_CHECK) && !defined(USE_YAW_SPIN_RECOVERY)
