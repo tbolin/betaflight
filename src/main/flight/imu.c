@@ -364,7 +364,7 @@ static float imuCalcKpGain(float *deviation, const float baseKp, const float dt,
     *deviation *= 1.0f - omega / (omega + 1.0f);
     DEBUG_SET(DEBUG_IMU_GAIN, 0, lrintf(kpGain * 100.0f));
     DEBUG_SET(DEBUG_IMU_GAIN, 1, lrintf(*deviation));
-    DEBUG_SET(DEBUG_IMU_GAIN, 2, lrintf(omega * 10000.0f));
+    DEBUG_SET(DEBUG_IMU_GAIN, 2, lrintf(dt * 100000.0f));
     DEBUG_SET(DEBUG_IMU_GAIN, 3, lrintf(accTrust * 1000.0f));
     return kpGain;
 }
