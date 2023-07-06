@@ -539,14 +539,15 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
 
 #if defined(SIMULATOR_BUILD) && !defined(USE_IMU_CALC)
     UNUSED(imuMahonyAHRSupdate);
-    UNUSED(imuIsAccelerometerHealthy);
-    UNUSED(useAcc);
+    UNUSED(attitudeDeviation);
     UNUSED(useMag);
     UNUSED(cogYawGain);
     UNUSED(canUseGPSHeading);
     UNUSED(courseOverGround);
     UNUSED(deltaT);
+    UNUSED(imuAccTrust);
     UNUSED(imuCalcKpGain);
+    UNUSED(imuUpdateDeviation);
 #else
 
 #if defined(SIMULATOR_BUILD) && defined(SIMULATOR_IMU_SYNC)
