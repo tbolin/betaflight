@@ -287,6 +287,8 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt,
     gy += ey + integralFBy;
     gz += ez + integralFBz;
 
+#define IMU_USE_4TH_ORDER_INTEGRATION 0
+#if !IMU_USE_4TH_ORDER_INTEGRATION
     // Integrate rate of change of quaternion
     gx *= (0.5f * dt);
     gy *= (0.5f * dt);
@@ -302,6 +304,63 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt,
     q.x += (+buffer.w * gx + buffer.y * gz - buffer.z * gy);
     q.y += (+buffer.w * gy - buffer.x * gz + buffer.z * gx);
     q.z += (+buffer.w * gz + buffer.x * gy - buffer.y * gx);
+
+#else
+    const quaternion k1 = {
+        .w = (-q.x * gx - q.y * gy - q.z * gz) * 0.5f,
+        .x = (+q.w * gx + q.y * gz - q.z * gy) * 0.5f,
+        .y = (+q.w * gy - q.x * gz + q.z * gx) * 0.5f,
+        .z = (+q.w * gz + q.x * gy - q.y * gx) * 0.5f,
+    };
+
+    const quaternion b1 = {
+        .w = q.w + k1.w * 0.5f * dt,
+        .x = q.x + k1.x * 0.5f * dt,
+        .y = q.y + k1.y * 0.5f * dt,
+        .z = q.z + k1.z * 0.5f * dt,
+    };
+
+    const quaternion k2 = {
+        .w = (-b1.x * gx - b1.y * gy - b1.z * gz) * 0.5f,
+        .x = (+b1.w * gx + b1.y * gz - b1.z * gy) * 0.5f,
+        .y = (+b1.w * gy - b1.x * gz + b1.z * gx) * 0.5f,
+        .z = (+b1.w * gz + b1.x * gy - b1.y * gx) * 0.5f,
+    };
+
+    const quaternion b2 = {
+        .w = q.w + k2.w * 0.5 * dt,
+        .x = q.x + k2.x * 0.5 * dt,
+        .y = q.y + k2.y * 0.5 * dt,
+        .z = q.z + k2.z * 0.5 * dt,
+    };
+
+    const quaternion k3 = {
+        .w = (-b2.x * gx - b2.y * gy - b2.z * gz) * 0.5f,
+        .x = (+b2.w * gx + b2.y * gz - b2.z * gy) * 0.5f,
+        .y = (+b2.w * gy - b2.x * gz + b2.z * gx) * 0.5f,
+        .z = (+b2.w * gz + b2.x * gy - b2.y * gx) * 0.5f,
+    };
+
+    const quaternion b3 = {
+        .w = q.w + k3.w * dt,
+        .x = q.x + k3.x * dt,
+        .y = q.y + k3.y * dt,
+        .z = q.z + k3.z * dt,
+    };
+
+    const quaternion k4 = {
+        .w = (-b3.x * gx - b3.y * gy - b3.z * gz) * 0.5f,
+        .x = (+b3.w * gx + b3.y * gz - b3.z * gy) * 0.5f,
+        .y = (+b3.w * gy - b3.x * gz + b3.z * gx) * 0.5f,
+        .z = (+b3.w * gz + b3.x * gy - b3.y * gx) * 0.5f,
+    };
+
+    q.w += (k1.w + 2.0f * k2.w + 2.0f * k3.w + k4.w) * dt / 6.0f;
+    q.x += (k1.x + 2.0f * k2.x + 2.0f * k3.x + k4.x) * dt / 6.0f;
+    q.y += (k1.y + 2.0f * k2.y + 2.0f * k3.y + k4.y) * dt / 6.0f;
+    q.z += (k1.z + 2.0f * k2.z + 2.0f * k3.z + k4.z) * dt / 6.0f;
+    DEBUG_SET(DEBUG_IMU_GAIN, 2, lrintf(10000.0f * sqrtf(sq(q.w - b1.w) + sq(q.x - b1.x) + sq(q.y - b1.y) + sq(q.z - b1.z))));
+#endif
 
     // Normalise quaternion
     float recipNorm = invSqrt(sq(q.w) + sq(q.x) + sq(q.y) + sq(q.z));
@@ -337,6 +396,17 @@ STATIC_UNIT_TESTED void imuUpdateEulerAngles(void)
     }
 }
 
+static float imuUpdateDeviation(const float deviation, const float imuDt, float durationSaturated)
+{
+    // Increase estiumated deviation based on time spent integrating
+    static const float err_rate_saturated = 500.0f; // guestimated gyro drift in deg/s when saturated
+    static const float err_rate_normal = 1.0f;  // static gyro drift in deg/s under normal circumstances
+    if (durationSaturated > imuDt) { durationSaturated = imuDt; }
+    const float normal_duration = imuDt - durationSaturated;
+    const float accumulated_error = err_rate_normal * normal_duration + err_rate_saturated * durationSaturated;
+    return constrainf(deviation + accumulated_error, 0.0f, 180.0f);
+}
+
 static float imuAccTrust(const float* accAverage, const float* gyroAverage, const float gRecip)
 {
     const fpVector3_t accVector = {.x = accAverage[X], .y = accAverage[Y], .z = accAverage[Z]};
@@ -345,7 +415,7 @@ static float imuAccTrust(const float* accAverage, const float* gyroAverage, cons
     const float gyroNorm = vectorNorm(&gyroVector);
     DEBUG_SET(DEBUG_IMU_GAIN, 4, lrintf(accNorm * 100.0f));
     DEBUG_SET(DEBUG_IMU_GAIN, 5, lrintf(gyroNorm * 1.0f));
-    return tent(accNorm, 1.0f, 0.1f) * tent(gyroNorm, 0.0f, 500.0f);
+    return tent(accNorm, 1.0f, 0.2f) * tent(gyroNorm, 0.0f, 100.0f);
 }
 
 // Calculate gain based on
@@ -359,12 +429,12 @@ static float imuCalcKpGain(float *deviation, const float baseKp, const float dt,
     const float kpGain = scaleRangef(*deviation, 0.0f, 180.0f, deviationGainMin, deviationGainMax) * accTrust;
 
     // decrease the estimated deviation based on how much we currently trust the acc
-    static const float heuristic = 0.1f;
-    const float omega = 2.0f * M_PIf * dt * (heuristic * kpGain);
+    static const float heuristic = 1.0f;
+    const float omega = 2.0f * M_PIf * dt * (heuristic * baseKp * accTrust);
     *deviation *= 1.0f - omega / (omega + 1.0f);
     DEBUG_SET(DEBUG_IMU_GAIN, 0, lrintf(kpGain * 100.0f));
     DEBUG_SET(DEBUG_IMU_GAIN, 1, lrintf(*deviation));
-    DEBUG_SET(DEBUG_IMU_GAIN, 2, lrintf(dt * 100000.0f));
+    // DEBUG_SET(DEBUG_IMU_GAIN, 2, lrintf(dt * 100000.0f));
     DEBUG_SET(DEBUG_IMU_GAIN, 3, lrintf(accTrust * 1000.0f));
     return kpGain;
 }
