@@ -128,7 +128,9 @@ PG_RESET_TEMPLATE(imuConfig_t, imuConfig,
     .imu_dcm_ki = 0,         // 0.003 * 10000
     .small_angle = DEFAULT_SMALL_ANGLE,
     .imu_process_denom = 2,
-    .mag_declination = 0
+    .mag_declination = 0,
+    .gyro_noise_std = 5,           // 0.5 deg/s
+    .acc_noise_std = 50,           // 5.0 deg/s
 );
 
 static void imuQuaternionComputeProducts(quaternion *quat, quaternionProducts *quatProd)
@@ -181,6 +183,9 @@ void imuConfigure(uint16_t throttle_correction_angle, uint8_t throttle_correctio
     const float imuMagneticDeclinationRad = DEGREES_TO_RADIANS(imuConfig()->mag_declination / 10.0f);
     north_ef.x = cos_approx(imuMagneticDeclinationRad);
     north_ef.y = -sin_approx(imuMagneticDeclinationRad);
+
+    imuRuntimeConfig.gyro_covariance = sq(DEGREES_TO_RADIANS(imuConfig()->gyro_noise_std * 0.1f));
+    imuRuntimeConfig.acc_covariance = sq(DEGREES_TO_RADIANS(imuConfig()->acc_noise_std * 0.1f));
 
     smallAngleCosZ = cos_approx(degreesToRadians(imuConfig()->small_angle));
 
@@ -341,7 +346,7 @@ STATIC_UNIT_TESTED void imuUpdateEulerAngles(void)
 static void imuUpdateRPEstimateCovariance(float *estimateCovariance, const float accGain, const float imuDt, float durationSaturated)
 {
     const float covarianceSaturated = sq(DEGREES_TO_RADIANS(500.0f)); // 500 is the guestimated gyro drift in deg/s when saturated
-    const float covarianceNormal = sq(DEGREES_TO_RADIANS(0.5f));  // 0.5 is gyro noise std deviation in deg/s under normal circumstances
+    const float covarianceNormal = imuRuntimeConfig.gyro_covariance;  // gyro noise covariance under normal circumstances
     if (durationSaturated > imuDt) { durationSaturated = imuDt; }
     const float normalDuration = imuDt - durationSaturated;
     const float accumulatedCovariance = covarianceNormal * normalDuration + covarianceSaturated * durationSaturated;
@@ -355,7 +360,7 @@ static void imuUpdateRPEstimateCovariance(float *estimateCovariance, const float
 static float imuAccCovariance(const float* accAverage, const float* gyroAverage, const float acc1gRecip)
 {
     // best case scenario accelerometer covariance
-    const float baseAccCovariance = sq(DEGREES_TO_RADIANS(5.0f));
+    const float baseAccCovariance = imuRuntimeConfig.acc_covariance;
 
     const fpVector3_t accVector = {.x = accAverage[X], .y = accAverage[Y], .z = accAverage[Z]};
     const fpVector3_t gyroVector = {.x = gyroAverage[X], .y = gyroAverage[Y], .z = gyroAverage[Z]};
