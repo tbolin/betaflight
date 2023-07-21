@@ -104,7 +104,8 @@ static fpVector2_t north_ef;
 
 #if defined(USE_ACC)
 STATIC_UNIT_TESTED bool attitudeIsEstablished = false;
-static float rpEstimateCovariance = sq(DEGREES_TO_RADIANS(360.0f));
+static const float estimateCovarianceResetValue = sq(DEGREES_TO_RADIANS(360.0f));
+static float rpEstimateCovariance = estimateCovarianceResetValue;
 #endif
 
 // quaternion of sensor frame relative to earth frame
@@ -408,17 +409,18 @@ STATIC_UNIT_TESTED void imuUpdateEulerAngles(void)
     }
 }
 
-// Increase upwards estimate covariance based on time spent integrating
+// Increase Roll/Pitch estimate covariance based on time spent integrating
 // Update the estimate covariance according to P_k = (1 - K_k) * P_k-1 + w(t)
-// w(t) is the gyro noise and is assumed to be normaldistributed with zero mean while the gyro is not saturated
-// and have a constant bias when the gyro is saturated.
+// w(t) is the gyro noise and is assumed to be normaldistributed with zero mean.
+// A much higher covariance is used when the gyro is saturated, but the noise is still modeled
+// as being normal distributed.
 static void imuUpdateRPEstimateCovariance(float *estimateCovariance, const float accGain, const float imuDt, float durationSaturated)
 {
     const float covarianceSaturated = sq(DEGREES_TO_RADIANS(500.0f)); // 500 is the guestimated gyro drift in deg/s when saturated
     const float covarianceNormal = sq(DEGREES_TO_RADIANS(0.5f));  // 0.5 is gyro noise std deviation in deg/s under normal circumstances
     if (durationSaturated > imuDt) { durationSaturated = imuDt; }
     const float normalDuration = imuDt - durationSaturated;
-    const float accumulatedCovariance = covarianceNormal * normalDuration + covarianceSaturated * sq(durationSaturated);
+    const float accumulatedCovariance = covarianceNormal * normalDuration + covarianceSaturated * durationSaturated;
     const float updatedCovariance = (1.0f - accGain) * *estimateCovariance + accumulatedCovariance;
     *estimateCovariance = constrainf(updatedCovariance, 0.0f, sq(DEGREES_TO_RADIANS(360.0f)));
 }
@@ -430,7 +432,6 @@ static float imuAccCovariance(const float* accAverage, const float* gyroAverage,
 {
     // best case scenario accelerometer covariance
     const float baseAccCovariance = sq(DEGREES_TO_RADIANS(5.0f));
-    const float epsilon = 0.01f;
 
     const fpVector3_t accVector = {.x = accAverage[X], .y = accAverage[Y], .z = accAverage[Z]};
     const fpVector3_t gyroVector = {.x = gyroAverage[X], .y = gyroAverage[Y], .z = gyroAverage[Z]};
@@ -438,8 +439,14 @@ static float imuAccCovariance(const float* accAverage, const float* gyroAverage,
     const float gyroNorm = vectorNorm(&gyroVector);
     DEBUG_SET(DEBUG_IMU_GAIN, 4, lrintf(accNorm * 100.0f));
     DEBUG_SET(DEBUG_IMU_GAIN, 5, lrintf(gyroNorm * 1.0f));
-    const float accTrust = tent(accNorm - 1.0f, 0.2f) * tent(gyroNorm, 100.0f);
 
+    // [g (ca 9.8 m/s)] return 0 if the norm of the accelerometer vector are above this value
+    const float accLimit = 0.2f;
+    // [deg/s] return 0 if the norm of the gyro rates are above this value
+    const float gyroLimit = 100.0f;
+    const float accTrust = tent(accNorm - 1.0f, accLimit) * tent(gyroNorm, gyroLimit);
+
+    const float epsilon = 0.01f;
     return accTrust > epsilon ? baseAccCovariance / accTrust : 0.0f;
 }
 
@@ -509,7 +516,12 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
 
     const timeDelta_t deltaT = currentTimeUs - previousIMUUpdateTime;
     previousIMUUpdateTime = currentTimeUs;
-    if (deltaT > 100000) { return; } // do not update attitude if the time delta is over 0.1s, to prevent weirdnes at startup
+    if (deltaT > 100000) { // do not update attitude if the time delta is over 0.1s, to prevent weirdnes at startup
+#if defined(USE_ACC)
+        rpEstimateCovariance = estimateCovarianceResetValue;
+#endif
+        return;
+    }
 
 #ifdef USE_MAG
     if (sensors(SENSOR_MAG) && compassIsHealthy()
@@ -538,6 +550,7 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
 
 #if defined(SIMULATOR_BUILD) && !defined(USE_IMU_CALC)
     UNUSED(imuMahonyAHRSupdate);
+    UNUSED(estimateCovarianceResetValue);
     UNUSED(rpEstimateCovariance);
     UNUSED(useMag);
     UNUSED(cogYawGain);
