@@ -104,8 +104,8 @@ static fpVector2_t north_ef;
 
 #if defined(USE_ACC)
 STATIC_UNIT_TESTED bool attitudeIsEstablished = false;
-static const float estimateCovarianceResetValue = sq(DEGREES_TO_RADIANS(360.0f));
-static float rpEstimateCovariance = estimateCovarianceResetValue;
+static const float estimateCovarianceMaximum = sq(DEGREES_TO_RADIANS(360.0f));
+static float rpEstimateCovariance = estimateCovarianceMaximum;
 #endif
 
 // quaternion of sensor frame relative to earth frame
@@ -337,15 +337,16 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt, float gx, float gy, float 
         // Difference is sum of cross product between estimated direction and measured direction of gravity
         vectorCrossProduct(&accDiff, &accRP_bf, &estRP_bf);
 
-        const float dot = vector3Dot(&accDiff, &estRP_bf);
+        const float dot = vector3Dot(&accRP_bf, &estRP_bf);
 
         // To avoid the gain decreasing for angles > 90 degrees:
         // set magnitude of error vector to 1 + |cos| of angle between estimated
         // and measured downwards vectors if the absolute angle of the error is > 90 degrees
-        if (dot <= 0) {
+        if (dot <= 0.0f) {
             vectorNormalize(&accDiff, &accDiff);
             vectorScale(&accDiff, &accDiff, 1.0f - dot);
         }
+        DEBUG_SET(DEBUG_IMU_GAIN, 2, lrintf(RADIANS_TO_DEGREES(acos_approx(dot)) * 10.0f));
     }
 
     // Compute and apply integral feedback if enabled
@@ -419,36 +420,39 @@ STATIC_UNIT_TESTED void imuUpdateEulerAngles(void)
 // w(t) is the gyro noise and is assumed to be normaldistributed with zero mean.
 // A much higher covariance is used when the gyro is saturated, but the noise is still modeled
 // as being normal distributed.
-static void imuUpdateRPEstimateCovariance(float *estimateCovariance, const float accGain, const float imuDt, float durationSaturated)
+// estimateCovariance covariance of the estimate
+// accGain kalman gain for the accelerometer
+// imuDt total time delta since last ahrs update
+// durationSaturated duration that the gyro has been saturated since last update
+// gyroCovariance covariance of the gyro under normal (non saturated) circumstances
+static void imuUpdateRPEstimateCovariance(float *estimateCovariance, const float accGain, const float imuDt, float durationSaturated, const float gyroCovariance)
 {
     const float covarianceSaturated = sq(DEGREES_TO_RADIANS(500.0f)); // 500 is the guestimated gyro drift in deg/s when saturated
-    const float covarianceNormal = imuRuntimeConfig.gyro_covariance;  // gyro noise covariance under normal circumstances
+
     if (durationSaturated > imuDt) { durationSaturated = imuDt; }
     const float normalDuration = imuDt - durationSaturated;
-    const float accumulatedCovariance = covarianceNormal * normalDuration + covarianceSaturated * durationSaturated;
-    const float updatedCovariance = (1.0f - accGain) * *estimateCovariance + accumulatedCovariance;
-    *estimateCovariance = constrainf(updatedCovariance, 0.0f, sq(DEGREES_TO_RADIANS(360.0f)));
+    const float accumulatedCovariance = gyroCovariance * normalDuration + covarianceSaturated * durationSaturated;
+    const float updatedCovariance = (1.0f - accGain) * (*estimateCovariance) + accumulatedCovariance;
+    *estimateCovariance = constrainf(updatedCovariance, 0.0f, estimateCovarianceMaximum);
 }
 
-// Approximate the accelerometer covariance based on  the accelerometer vector norm
-// and gyro rates.
-// will return 0.0 if the measurement is considered unusable
-static float imuAccCovariance(const float* accAverage, const float* gyroAverage, const float acc1gRecip)
+static float imuCalcGyroCovariance(const float baseCovariance, const float gyroNorm)
 {
-    // best case scenario accelerometer covariance
-    const float baseAccCovariance = imuRuntimeConfig.acc_covariance;
+    const float rateScaling = 1.0f / 5.0f;
+    return baseCovariance + baseCovariance * gyroNorm * rateScaling;
+}
 
-    const fpVector3_t accVector = {.x = accAverage[X], .y = accAverage[Y], .z = accAverage[Z]};
-    const fpVector3_t gyroVector = {.x = gyroAverage[X], .y = gyroAverage[Y], .z = gyroAverage[Z]};
-    const float accNorm = vectorNorm(&accVector) * acc1gRecip;
-    const float gyroNorm = vectorNorm(&gyroVector);
-    DEBUG_SET(DEBUG_IMU_GAIN, 4, lrintf(accNorm * 100.0f));
-    DEBUG_SET(DEBUG_IMU_GAIN, 5, lrintf(gyroNorm * 1.0f));
-
-    // [g (ca 9.8 m/s)] return 0 if the norm of the accelerometer vector are above this value
-    const float accLimit = 0.2f;
+/// Approximate the accelerometer covariance based on  the accelerometer vector norm
+/// and gyro rates.
+/// will return 0.0 if the measurement is considered unusable
+/// @arg baseAccCovariance best case scenario accelerometer covariance
+/// @arg accNorm norm of the accelerometer vector in g
+/// @arg gyroNorm norm of the gyrp rate vector in degrees per second
+static float imuAccCovariance(const float baseAccCovariance, const float accNorm, const float gyroNorm)
+{   // return 0 if the norm of the accelerometer vector differs more than this from 1.0g (ca 9.8 m/s)
+    const float accLimit = 0.1f;
     // [deg/s] return 0 if the norm of the gyro rates are above this value
-    const float gyroLimit = 100.0f;
+    const float gyroLimit = 50.0f;
     const float accTrust = tent(accNorm - 1.0f, accLimit) * tent(gyroNorm, gyroLimit);
 
     const float epsilon = 0.01f;
@@ -523,7 +527,7 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
     previousIMUUpdateTime = currentTimeUs;
     if (deltaT > 100000) { // do not update attitude if the time delta is over 0.1s, to prevent weirdnes at startup
 #if defined(USE_ACC)
-        rpEstimateCovariance = estimateCovarianceResetValue;
+        rpEstimateCovariance = estimateCovarianceMaximum;
 #endif
         return;
     }
@@ -555,7 +559,7 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
 
 #if defined(SIMULATOR_BUILD) && !defined(USE_IMU_CALC)
     UNUSED(imuMahonyAHRSupdate);
-    UNUSED(estimateCovarianceResetValue);
+    UNUSED(estimateCovarianceMaximum);
     UNUSED(rpEstimateCovariance);
     UNUSED(useMag);
     UNUSED(cogYawGain);
@@ -564,6 +568,7 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
     UNUSED(deltaT);
     UNUSED(imuAccCovariance);
     UNUSED(imuCalcAccGain);
+    UNUSED(imuCalcGyroCovariance);
     UNUSED(imuUpdateRPEstimateCovariance);
 #else
 
@@ -578,8 +583,13 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
 
     const float dt = deltaT * 1e-6f;
 
-    const float accCovariance = imuAccCovariance(acc.accADC, gyroAverage, acc.dev.acc_1G_rec);
 
+    const fpVector3_t accVector = {.x = acc.accADC[X], .y = acc.accADC[Y], .z = acc.accADC[Z]};
+    const fpVector3_t gyroVector = {.x = gyroAverage[X], .y = gyroAverage[Y], .z = gyroAverage[Z]};
+    const float accNorm = vectorNorm(&accVector) * acc.dev.acc_1G_rec;
+    const float gyroNorm = vectorNorm(&gyroVector);
+
+    const float accCovariance = imuAccCovariance(imuRuntimeConfig.acc_covariance, accNorm, gyroNorm);
     const float accRPGain = imuCalcAccGain(dt, rpEstimateCovariance, accCovariance);
 
     imuMahonyAHRSupdate(dt,
@@ -589,11 +599,15 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
                         cogYawGain, courseOverGround);
 
     imuUpdateEulerAngles();
-    imuUpdateRPEstimateCovariance(&rpEstimateCovariance, accRPGain, dt, gyroGetDurationSpentSaturated());
+
+    float gyroCovariance = imuCalcGyroCovariance(imuRuntimeConfig.gyro_covariance, gyroNorm);
+    imuUpdateRPEstimateCovariance(&rpEstimateCovariance, accRPGain, dt, gyroGetDurationSpentSaturated(), gyroCovariance);
 
     DEBUG_SET(DEBUG_IMU_GAIN, 0, lrintf(1000.0f * accRPGain / dt));
     DEBUG_SET(DEBUG_IMU_GAIN, 1, lrintf(10.0f * RADIANS_TO_DEGREES(sqrtf(rpEstimateCovariance))));
-    DEBUG_SET(DEBUG_IMU_GAIN, 3, lrintf(1000.0f * RADIANS_TO_DEGREES(sqrtf(accCovariance))));
+    DEBUG_SET(DEBUG_IMU_GAIN, 3, lrintf(10.0f * RADIANS_TO_DEGREES(sqrtf(accCovariance))));
+    DEBUG_SET(DEBUG_IMU_GAIN, 4, lrintf(accNorm * 100.0f));
+    DEBUG_SET(DEBUG_IMU_GAIN, 5, lrintf(gyroNorm * 1.0f));
 #endif
 }
 
