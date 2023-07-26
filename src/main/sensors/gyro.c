@@ -132,6 +132,9 @@ void pgResetFn_gyroConfig(gyroConfig_t *gyroConfig)
     gyroConfig->gyro_lpf1_dyn_expo = 5;
     gyroConfig->simplified_gyro_filter = true;
     gyroConfig->simplified_gyro_filter_multiplier = SIMPLIFIED_TUNING_DEFAULT;
+    gyroConfig->gyro_scaling_adjustment[X] = 0;
+    gyroConfig->gyro_scaling_adjustment[Y] = 0;
+    gyroConfig->gyro_scaling_adjustment[Z] = 0;
 }
 
 bool isGyroSensorCalibrationComplete(const gyroSensor_t *gyroSensor)
@@ -441,6 +444,10 @@ FAST_CODE void gyroUpdate(void)
         break;
 #endif
     }
+    // apply gyro scaling adjustment
+    gyro.gyroADC[X] *= gyro.scalingAdjustment[X];
+    gyro.gyroADC[Y] *= gyro.scalingAdjustment[Y];
+    gyro.gyroADC[Z] *= gyro.scalingAdjustment[Z];
 
     if (gyro.downsampleFilterEnabled) {
         // using gyro lowpass 2 filter for downsampling
