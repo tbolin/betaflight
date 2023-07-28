@@ -84,10 +84,8 @@ static bool imuUpdated = false;
 
 #define SPIN_RATE_LIMIT 20
 
-#define ATTITUDE_RESET_QUIET_TIME 250000   // 250ms - gyro quiet period after disarm before attitude reset
-#define ATTITUDE_RESET_GYRO_LIMIT 15       // 15 deg/sec - gyro limit for quiet period
-#define ATTITUDE_RESET_ACTIVE_TIME 500000  // 500ms - Time to wait for attitude to converge at high gain
 #define GPS_COG_MIN_GROUNDSPEED 100        // 1.0m/s - min groundspeed for GPS Heading reinitialisation etc
+
 bool canUseGPSHeading = true;
 
 static float throttleAngleScale;
@@ -100,9 +98,18 @@ float rMat[3][3];
 static fpVector2_t north_ef;
 
 #if defined(USE_ACC)
+// Do not use accelerometer if the norm of the reading differs more than this from 1g [g]
+static const float IMU_ACC_COVARIANCE_CALC_ACC_NORM_LIMIT = 0.2f;
+// Do not use accelerometer if the gyro norm is greater than this [deg/s]
+static const float IMU_ACC_COVARIANCE_CALC_GYRO_NORM_LIMIT = 50.0f;
+// How fast the gyro covaraince will increase with higher rates
+static const float IMU_GYRO_COVARIANCE_CALC_RATE_SCALING = 1.0f / 10.0f;
+// 500 is the guestimated gyro drift in deg/s when the gyro is saturated
+static const float IMU_GYRO_COVARIANCE_SATURATED = sq(DEGREES_TO_RADIANS(500.0f));
+
 STATIC_UNIT_TESTED bool attitudeIsEstablished = false;
-static const float estimateCovarianceMaximum = sq(DEGREES_TO_RADIANS(360.0f));
-static float rpEstimateCovariance = estimateCovarianceMaximum;
+static const float IMU_ESTIMATE_COVARIANCE_MAXIMUM = sq(DEGREES_TO_RADIANS(180.0f));
+static float rpEstimateCovariance = IMU_ESTIMATE_COVARIANCE_MAXIMUM;
 #endif
 
 // quaternion of sensor frame relative to earth frame
@@ -351,19 +358,18 @@ STATIC_UNIT_TESTED void imuUpdateEulerAngles(void)
 // gyroCovariance covariance of the gyro under normal (non saturated) circumstances
 static void imuUpdateRPEstimateCovariance(float *estimateCovariance, const float accGain, const float imuDt, float durationSaturated, const float gyroCovariance)
 {
-    const float covarianceSaturated = sq(DEGREES_TO_RADIANS(500.0f)); // 500 is the guestimated gyro drift in deg/s when saturated
+    const float covarianceSaturated = IMU_GYRO_COVARIANCE_SATURATED;  // 500 is the guestimated gyro drift in deg/s when saturated
 
     if (durationSaturated > imuDt) { durationSaturated = imuDt; }
     const float normalDuration = imuDt - durationSaturated;
     const float accumulatedCovariance = gyroCovariance * normalDuration + covarianceSaturated * durationSaturated;
     const float updatedCovariance = (1.0f - accGain) * (*estimateCovariance) + accumulatedCovariance;
-    *estimateCovariance = constrainf(updatedCovariance, 0.0f, estimateCovarianceMaximum);
+    *estimateCovariance = constrainf(updatedCovariance, 0.0f, IMU_ESTIMATE_COVARIANCE_MAXIMUM);
 }
 
 static float imuCalcGyroCovariance(const float baseCovariance, const float gyroNorm)
 {
-    const float rateScaling = 1.0f / 5.0f;
-    return baseCovariance + baseCovariance * gyroNorm * rateScaling;
+    return baseCovariance + baseCovariance * gyroNorm * IMU_GYRO_COVARIANCE_CALC_RATE_SCALING;
 }
 
 /// Approximate the accelerometer covariance based on  the accelerometer vector norm
@@ -374,9 +380,11 @@ static float imuCalcGyroCovariance(const float baseCovariance, const float gyroN
 /// @arg gyroNorm norm of the gyrp rate vector in degrees per second
 static float imuAccCovariance(const float baseAccCovariance, const float accNorm, const float gyroNorm)
 {   // return 0 if the norm of the accelerometer vector differs more than this from 1.0g (ca 9.8 m/s)
-    const float accLimit = 0.1f;
+    const float accLimit = IMU_ACC_COVARIANCE_CALC_ACC_NORM_LIMIT;
     // [deg/s] return 0 if the norm of the gyro rates are above this value
-    const float gyroLimit = 50.0f;
+    const float gyroLimit = IMU_ACC_COVARIANCE_CALC_GYRO_NORM_LIMIT;
+    // Use acceleromter, but increase the covariance by how much the
+    // gyro and acc vector norms differs from the ideal
     const float accTrust = tent(accNorm - 1.0f, accLimit) * tent(gyroNorm, gyroLimit);
 
     const float epsilon = 0.01f;
@@ -620,6 +628,10 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
     UNUSED(imuCalcAccGain);
     UNUSED(imuCalcGyroCovariance);
     UNUSED(imuUpdateRPEstimateCovariance);
+    UNUSED(IMU_ACC_COVARIANCE_CALC_ACC_NORM_LIMIT);
+    UNUSED(IMU_ACC_COVARIANCE_CALC_GYRO_NORM_LIMIT);
+    UNUSED(IMU_GYRO_COVARIANCE_CALC_RATE_SCALING);
+    UNUSED(IMU_GYRO_COVARIANCE_SATURATED);
 
     UNUSED(currentTimeUs);
 }
@@ -637,7 +649,7 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
     previousIMUUpdateTime = currentTimeUs;
     if (deltaT > 100000) { // do not update attitude if the time delta is over 0.1s, to prevent weirdnes at startup
 #if defined(USE_ACC)
-        rpEstimateCovariance = estimateCovarianceMaximum;
+        rpEstimateCovariance = IMU_ESTIMATE_COVARIANCE_MAXIMUM;
 #endif
         return;
     }
