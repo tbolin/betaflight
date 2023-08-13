@@ -141,6 +141,11 @@ PG_RESET_TEMPLATE(imuConfig_t, imuConfig,
     .acc_noise_std = 50,           // 5.0 deg/s
 );
 
+static void imuResetEstimateCovariance(void)
+{
+    rpEstimateCovariance = IMU_ESTIMATE_COVARIANCE_MAXIMUM;
+}
+
 static void imuQuaternionComputeProducts(quaternion *quat, quaternionProducts *quatProd)
 {
     quatProd->ww = quat->w * quat->w;
@@ -193,6 +198,8 @@ void imuConfigure(uint16_t throttle_correction_angle, uint8_t throttle_correctio
 
     imuRuntimeConfig.gyro_noise_psd = sq(DEGREES_TO_RADIANS(imuConfig()->gyro_noise_asd * 0.1f));
     imuRuntimeConfig.acc_covariance = sq(DEGREES_TO_RADIANS(imuConfig()->acc_noise_std * 0.1f));
+
+    imuResetEstimateCovariance();
 
     smallAngleCosZ = cos_approx(degreesToRadians(imuConfig()->small_angle));
 
@@ -657,10 +664,13 @@ void imuUpdateAttitude(timeUs_t currentTimeUs)
         mixerSetThrottleAngleCorrection(throttleAngleCorrection);
 
     } else {
-        acc.accADC[X] = 0;
-        acc.accADC[Y] = 0;
-        acc.accADC[Z] = 0;
+        if (!sensors(SENSOR_ACC) || !acc.isAccelUpdatedAtLeastOnce) {
+            acc.accADC[X] = 0;
+            acc.accADC[Y] = 0;
+            acc.accADC[Z] = 0;
+        }
         schedulerIgnoreTaskStateTime();
+        imuResetEstimateCovariance();
     }
 
     DEBUG_SET(DEBUG_ATTITUDE, X, acc.accADC[X]); // roll
