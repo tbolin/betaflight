@@ -1017,7 +1017,7 @@ const clivalue_t valueTable[] = {
 #ifdef USE_MAG
     { PARAM_NAME_IMU_MAG_DECLINATION, VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0,  3599 }, PG_IMU_CONFIG, offsetof(imuConfig_t, mag_declination) },
 #endif
-    { "imu_gyro_noise_std",         VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 1, 255 }, PG_IMU_CONFIG, offsetof(imuConfig_t, gyro_noise_std) },
+    { "imu_gyro_noise_asd",         VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 1, 255 }, PG_IMU_CONFIG, offsetof(imuConfig_t, gyro_noise_asd) },
     { "imu_acc_noise_std",          VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 }, PG_IMU_CONFIG, offsetof(imuConfig_t, acc_noise_std) },
 
 // PG_ARMING_CONFIG

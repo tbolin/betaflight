@@ -58,7 +58,7 @@ typedef struct imuConfig_s {
     uint8_t small_angle;
     uint8_t imu_process_denom;
     uint16_t mag_declination;     // Magnetic declination in degrees * 10
-    uint8_t gyro_noise_std;         // gyro noise standard deviation in decidegrees/s
+    uint8_t gyro_noise_asd;         // gyro noise amplitude spectral density in (decidegrees/s)/sqrt(s)
     uint8_t acc_noise_std;          // accelerometer noise standard deviation in decidegrees/s
 } imuConfig_t;
 
@@ -67,7 +67,7 @@ PG_DECLARE(imuConfig_t, imuConfig);
 typedef struct imuRuntimeConfig_s {
     float imuDcmKi;
     float imuDcmKp;
-    float gyro_covariance;
+    float gyro_noise_psd;   // gyro noise power spectral density, (deg/s)^2/s, i.e. gyro_noise_asd squared
     float acc_covariance;
 } imuRuntimeConfig_t;
 

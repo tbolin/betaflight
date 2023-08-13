@@ -105,7 +105,7 @@ static const float IMU_ACC_COVARIANCE_CALC_GYRO_NORM_LIMIT = 50.0f;
 // How fast the gyro covaraince will increase with higher rates
 static const float IMU_GYRO_COVARIANCE_CALC_RATE_SCALING = 1.0f / 10.0f;
 // 500 is the guestimated gyro drift in deg/s when the gyro is saturated
-static const float IMU_GYRO_COVARIANCE_SATURATED = sq(DEGREES_TO_RADIANS(500.0f));
+static const float IMU_GYRO_PSD_SATURATED = sq(DEGREES_TO_RADIANS(500.0f));
 
 STATIC_UNIT_TESTED bool attitudeIsEstablished = false;
 static const float IMU_ESTIMATE_COVARIANCE_MAXIMUM = sq(DEGREES_TO_RADIANS(180.0f));
@@ -136,7 +136,7 @@ PG_RESET_TEMPLATE(imuConfig_t, imuConfig,
     .small_angle = DEFAULT_SMALL_ANGLE,
     .imu_process_denom = 2,
     .mag_declination = 0,
-    .gyro_noise_std = 5,           // 0.5 deg/s
+    .gyro_noise_asd = 5,           // 0.5 (deg/s)/sqrt(s)
     .acc_noise_std = 50,           // 5.0 deg/s
 );
 
@@ -191,7 +191,7 @@ void imuConfigure(uint16_t throttle_correction_angle, uint8_t throttle_correctio
     north_ef.x = cos_approx(imuMagneticDeclinationRad);
     north_ef.y = -sin_approx(imuMagneticDeclinationRad);
 
-    imuRuntimeConfig.gyro_covariance = sq(DEGREES_TO_RADIANS(imuConfig()->gyro_noise_std * 0.1f));
+    imuRuntimeConfig.gyro_noise_psd = sq(DEGREES_TO_RADIANS(imuConfig()->gyro_noise_asd * 0.1f));
     imuRuntimeConfig.acc_covariance = sq(DEGREES_TO_RADIANS(imuConfig()->acc_noise_std * 0.1f));
 
     smallAngleCosZ = cos_approx(degreesToRadians(imuConfig()->small_angle));
@@ -358,18 +358,16 @@ STATIC_UNIT_TESTED void imuUpdateEulerAngles(void)
 // gyroCovariance covariance of the gyro under normal (non saturated) circumstances
 static void imuUpdateRPEstimateCovariance(float *estimateCovariance, const float accGain, const float imuDt, float durationSaturated, const float gyroCovariance)
 {
-    const float covarianceSaturated = IMU_GYRO_COVARIANCE_SATURATED;  // 500 is the guestimated gyro drift in deg/s when saturated
-
     if (durationSaturated > imuDt) { durationSaturated = imuDt; }
     const float normalDuration = imuDt - durationSaturated;
-    const float accumulatedCovariance = gyroCovariance * normalDuration + covarianceSaturated * durationSaturated;
+    const float accumulatedCovariance = gyroCovariance * normalDuration + IMU_GYRO_PSD_SATURATED * durationSaturated;
     const float updatedCovariance = (1.0f - accGain) * (*estimateCovariance) + accumulatedCovariance;
     *estimateCovariance = constrainf(updatedCovariance, 0.0f, IMU_ESTIMATE_COVARIANCE_MAXIMUM);
 }
 
-static float imuCalcGyroCovariance(const float baseCovariance, const float gyroNorm)
+static float imuCalcGyroPsd(const float basePsd, const float gyroNorm)
 {
-    return baseCovariance + baseCovariance * gyroNorm * IMU_GYRO_COVARIANCE_CALC_RATE_SCALING;
+    return basePsd + basePsd * gyroNorm * IMU_GYRO_COVARIANCE_CALC_RATE_SCALING;
 }
 
 /// Approximate the accelerometer covariance based on  the accelerometer vector norm
@@ -632,6 +630,9 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
     UNUSED(IMU_ACC_COVARIANCE_CALC_GYRO_NORM_LIMIT);
     UNUSED(IMU_GYRO_COVARIANCE_CALC_RATE_SCALING);
     UNUSED(IMU_GYRO_COVARIANCE_SATURATED);
+    UNUSED(IMU_ESTIMATE_COVARIANCE_MAXIMUM);
+    UNUSED(rpEstimateCovariance);
+    UNUSED(imuCalcGyroPsd);
 
     UNUSED(currentTimeUs);
 }
@@ -730,8 +731,8 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
 
     imuUpdateEulerAngles();
 
-    float gyroCovariance = imuCalcGyroCovariance(imuRuntimeConfig.gyro_covariance, gyroNorm);
-    imuUpdateRPEstimateCovariance(&rpEstimateCovariance, accRPGain, dt, gyroGetDurationSpentSaturated(), gyroCovariance);
+    const float gyroPsd = imuCalcGyroPsd(imuRuntimeConfig.gyro_noise_psd, gyroNorm);
+    imuUpdateRPEstimateCovariance(&rpEstimateCovariance, accRPGain, dt, gyroGetDurationSpentSaturated(), gyroPsd);
 
     DEBUG_SET(DEBUG_IMU_GAIN, 0, lrintf(1000.0f * accRPGain / dt));
     DEBUG_SET(DEBUG_IMU_GAIN, 1, lrintf(10.0f * RADIANS_TO_DEGREES(sqrtf(rpEstimateCovariance))));
