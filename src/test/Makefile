@@ -151,11 +151,14 @@ flight_failsafe_unittest_DEFINES := \
 
 flight_imu_unittest_SRC := \
 		$(USER_DIR)/common/bitarray.c \
+		$(USER_DIR)/common/crc.c \
 		$(USER_DIR)/common/maths.c \
+		$(USER_DIR)/common/streambuf.c \
 		$(USER_DIR)/config/feature.c \
 		$(USER_DIR)/fc/rc_modes.c \
 		$(USER_DIR)/flight/position.c \
-		$(USER_DIR)/flight/imu.c
+		$(USER_DIR)/flight/imu.c \
+		$(USER_DIR)/pg/pg.c
 
 
 flight_mixer_unittest :=  \
