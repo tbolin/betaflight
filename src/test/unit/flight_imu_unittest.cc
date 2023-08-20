@@ -29,6 +29,7 @@ extern "C" {
     #include "common/vector.h"
 
     #include "config/feature.h"
+    #include "config/config_reset.h"
     #include "pg/pg.h"
     #include "pg/pg_ids.h"
     #include "pg/rx.h"
@@ -62,9 +63,8 @@ extern "C" {
     void imuUpdateEulerAngles(void);
     void imuMahonyAHRSupdate(float dt,
                              float gx, float gy, float gz,
-                             bool useAcc, float ax, float ay, float az,
-                             float headingErrMag, float headingErrCog,
-                             const float dcmKpGain);
+                             const float accRPGain, float ax, float ay, float az,
+                             float headingErrMag, float headingErrCog);
     float imuCalcMagErr(void);
     float imuCalcCourseErr(float courseOverGround);
     extern quaternion q;
@@ -247,7 +247,7 @@ testing::AssertionResult DoubleNearWrapPredFormat(const char* expr1, const char*
 class MahonyFixture : public ::testing::Test {
 protected:
     fpVector3_t gyro;
-    bool useAcc;
+    float acRPGain;
     fpVector3_t acc;
     bool useMag;
     fpVector3_t magEF;
@@ -257,13 +257,13 @@ protected:
     float dt;
     void SetUp() override {
         vectorZero(&gyro);
-        useAcc = false;
+        acRPGain = 0.0f;
         vectorZero(&acc);
         cogGain = 0.0;   // no cog
         cogDeg  = 0.0;
         dcmKp = .25;     // default dcm_kp
         dt = 1e-2;       // 100Hz update
-
+        pgResetAll();
         imuConfigure(0, 0);
         // level, poiting north
         setOrientationAA(0, {{1,0,0}});        // identity
@@ -305,9 +305,8 @@ protected:
 
             imuMahonyAHRSupdate(dt,
                                 gyro.x, gyro.y, gyro.z,
-                                useAcc, acc.x, acc.y, acc.z,
-                                headingErrMag, headingErrCog,
-                                dcmKp);
+                                acRPGain, acc.x, acc.y, acc.z,
+                                headingErrMag, headingErrCog);
             imuUpdateEulerAngles();
             // if (fmod(t, 1) < dt) printf("%3.1fs - %3.1f %3.1f %3.1f\n", t, attitude.values.roll / 10.0f, attitude.values.pitch / 10.0f, attitude.values.yaw / 10.0f);
             // remember how long it took
@@ -439,6 +438,8 @@ extern "C" {
     float getBaroAltitude(void) { return 3000.0f; }
     float gpsRescueGetImuYawCogGain(void) { return 1.0f; }
     float getRcDeflectionAbs(int) { return 0.0f; }
+    float gyroGetDurationSpentSaturated(void) { return 0.0f; }
+    bool gyroIsCalibrationComplete(void) { return true; }
 
     void pt2FilterInit(pt2Filter_t *baroDerivativeLpf, float) {
         UNUSED(baroDerivativeLpf);
