@@ -109,7 +109,7 @@ static const float IMU_GYRO_PSD_SATURATED = sq(DEGREES_TO_RADIANS(500.0f));
 
 STATIC_UNIT_TESTED bool attitudeIsEstablished = false;
 static const float IMU_ESTIMATE_COVARIANCE_MAXIMUM = sq(DEGREES_TO_RADIANS(180.0f));
-static float rpEstimateCovariance = IMU_ESTIMATE_COVARIANCE_MAXIMUM;
+static float imuRpEstimateCovariance = IMU_ESTIMATE_COVARIANCE_MAXIMUM;
 #endif
 
 // quaternion of sensor frame relative to earth frame
@@ -142,7 +142,7 @@ PG_RESET_TEMPLATE(imuConfig_t, imuConfig,
 
 static void imuResetEstimateCovariance(void)
 {
-    rpEstimateCovariance = IMU_ESTIMATE_COVARIANCE_MAXIMUM;
+    imuRpEstimateCovariance = IMU_ESTIMATE_COVARIANCE_MAXIMUM;
 }
 
 static void imuQuaternionComputeProducts(quaternion *quat, quaternionProducts *quatProd)
@@ -231,14 +231,68 @@ static float invSqrt(float x)
     return 1.0f / sqrtf(x);
 }
 
+// Increase Roll/Pitch estimate covariance based on time spent integrating
+// Update the estimate covariance according to P_k = (1 - K_k) * P_k-1 + w(t)
+// w(t) is the gyro noise and is assumed to be normaldistributed with zero mean.
+// A much higher covariance is used when the gyro is saturated, but the noise is still modeled
+// as being normal distributed.
+// estimateCovariance covariance of the estimate
+// accGain kalman gain for the accelerometer
+// imuDt total time delta since last ahrs update
+// durationSaturated duration that the gyro has been saturated since last update
+// gyroCovariance covariance of the gyro under normal (non saturated) circumstances
+static void imuUpdateRPEstimateCovariance(float *estimateCovariance, const float accGain, const float imuDt, float durationSaturated, const float gyroCovariance)
+{
+    if (durationSaturated > imuDt) { durationSaturated = imuDt; }
+    const float normalDuration = imuDt - durationSaturated;
+    const float accumulatedCovariance = gyroCovariance * normalDuration + IMU_GYRO_PSD_SATURATED * durationSaturated;
+    const float updatedCovariance = (1.0f - accGain) * (*estimateCovariance) + accumulatedCovariance;
+    *estimateCovariance = constrainf(updatedCovariance, 0.0f, IMU_ESTIMATE_COVARIANCE_MAXIMUM);
+}
+
+static float imuCalcGyroPsd(const float basePsd, const float gyroNorm)
+{
+    return basePsd + basePsd * RADIANS_TO_DEGREES(gyroNorm) * IMU_GYRO_COVARIANCE_CALC_RATE_SCALING;
+}
+
+/// Approximate the accelerometer covariance based on  the accelerometer vector norm
+/// and gyro rates.
+/// will return 0.0 if the measurement is considered unusable
+/// @arg baseAccCovariance best case scenario accelerometer covariance
+/// @arg accNorm norm of the accelerometer vector in g
+/// @arg gyroNorm norm of the gyrp rate vector in degrees per second
+static float imuAccCovariance(const float baseAccCovariance, const float accNorm, const float gyroNorm)
+{   // return 0 if the norm of the accelerometer vector differs more than this from 1.0g (ca 9.8 m/s)
+    const float accLimit = IMU_ACC_COVARIANCE_CALC_ACC_NORM_LIMIT;
+    // [deg/s] return 0 if the norm of the gyro rates are above this value
+    const float gyroLimit = IMU_ACC_COVARIANCE_CALC_GYRO_NORM_LIMIT;
+    // Use acceleromter, but increase the covariance by how much the
+    // gyro and acc vector norms differs from the ideal
+    const float accTrust = tent(accNorm - 1.0f, accLimit) * tent(RADIANS_TO_DEGREES(gyroNorm), gyroLimit);
+
+    const float epsilon = 0.01f;
+    return accTrust > epsilon ? baseAccCovariance / accTrust : 0.0f;
+}
+
+// Calculate Kalman gain for accelerometer
+static float imuCalcAccGain(const float dt, const float estimateCovariance, const float accCovariance)
+{
+    if (accCovariance > 0.0f) {
+        return estimateCovariance / (estimateCovariance + accCovariance / dt);
+    } else {
+        return 0.0f;
+    }
+}
+
 // g[xyz] - gyro reading, in rad/s
-// accRPGain - gain for the accelerometer
+// rpEstimateCovariance - estimated covariance for the current roll and pitch estimates 
 // a[xyz] - accelerometer reading, direction only, normalized internally
 // headingErrMag - heading error (in earth frame) derived from magnetometter, rad/s around Z axis (* dcmKpGain)
 // headingErrCog - heading error (in earth frame) derived from CourseOverGround, rad/s around Z axis (* dcmKpGain)
-STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt,
+STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt, const imuRuntimeConfig_t* config,
                                 float gx, float gy, float gz,
-                                const float accRPGain, float ax, float ay, float az,
+                                float* rpEstimateCovariance, const float durationSaturated,
+                                float ax, float ay, float az,
                                 float headingErrMag, float headingErrCog)
 {
     static float integralFBx = 0.0f,  integralFBy = 0.0f, integralFBz = 0.0f;    // integral error terms scaled by Ki
@@ -255,27 +309,31 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt,
     ez += rMat[Z][Z] * (headingErrCog + headingErrMag);
 
     DEBUG_SET(DEBUG_ATTITUDE, 3, (headingErrCog * 100));
-    DEBUG_SET(DEBUG_ATTITUDE, 7, lrintf(accRPGain * 100.0f));
 
     // Use measured acceleration vector
-    float recipAccNorm = sq(ax) + sq(ay) + sq(az);
+    const fpVector3_t gyroVector = {.x = gx, .y = gy, .z = gz};
+    const float gyroNorm = vectorNorm(&gyroVector);
+
+    fpVector3_t acc_bf =  {.x = ax, .y = ay, .z = az};
+    const float accNorm = vectorNorm(&acc_bf);
+
+    const float accCovariance = imuAccCovariance(config->acc_covariance, accNorm, gyroNorm);
+    const float accRPGain = imuCalcAccGain(dt, *rpEstimateCovariance, accCovariance);
+
     fpVector3_t accDiff;
     vectorZero(&accDiff);
-    if (accRPGain > 0.0f && recipAccNorm > 0.01f) {
+
+    if (accRPGain > 0.0f && accNorm > 0.01f) {
         // Normalise accelerometer measurement; useAcc is true when all smoothed acc axes are within 20% of 1G
-        recipAccNorm = invSqrt(recipAccNorm);
+        const float recipAccNorm = 1.0f / accNorm;
+        vectorScale(&acc_bf, &acc_bf, recipAccNorm);
 
-        ax *= recipAccNorm;
-        ay *= recipAccNorm;
-        az *= recipAccNorm;
-
-        fpVector3_t accRP_bf = {.x = ax, .y = ay, .z = az};
         fpVector3_t estRP_bf = {.x = rMat[2][0], .y = rMat[2][1], .z = rMat[2][2]};
 
         // Difference is sum of cross product between estimated direction and measured direction of gravity
-        vectorCrossProduct(&accDiff, &accRP_bf, &estRP_bf);
+        vectorCrossProduct(&accDiff, &acc_bf, &estRP_bf);
 
-        const float dot = vector3Dot(&accRP_bf, &estRP_bf);
+        const float dot = vector3Dot(&acc_bf, &estRP_bf);
 
         // To avoid the gain decreasing for angles > 90 degrees:
         // set magnitude of error vector to 1 + |cos| of angle between estimated
@@ -287,14 +345,23 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt,
         DEBUG_SET(DEBUG_IMU_GAIN, 2, lrintf(RADIANS_TO_DEGREES(acos_approx(dot)) * 10.0f));
     }
 
+    // update roll pitch estimate covariance
+    const float gyroPsd = imuCalcGyroPsd(config->gyro_noise_psd, gyroNorm);
+    imuUpdateRPEstimateCovariance(rpEstimateCovariance, accRPGain, dt, durationSaturated, gyroPsd);
+
+    DEBUG_SET(DEBUG_IMU_GAIN, 0, lrintf(1000.0f * accRPGain / dt));
+    DEBUG_SET(DEBUG_IMU_GAIN, 1, lrintf(10.0f * RADIANS_TO_DEGREES(sqrtf(*rpEstimateCovariance))));
+    DEBUG_SET(DEBUG_IMU_GAIN, 3, lrintf(10.0f * RADIANS_TO_DEGREES(sqrtf(accCovariance))));
+    DEBUG_SET(DEBUG_IMU_GAIN, 4, lrintf(accNorm * 100.0f));
+    DEBUG_SET(DEBUG_IMU_GAIN, 5, lrintf(gyroNorm * 1.0f));
+
     // Compute and apply integral feedback if enabled
-    if (imuRuntimeConfig.imuDcmKi > 0.0f) {
+    if (config->imuDcmKi > 0.0f) {
         // Stop integrating if spinning beyond the certain limit
         if (spin_rate < DEGREES_TO_RADIANS(SPIN_RATE_LIMIT)) {
-            const float dcmKiGain = imuRuntimeConfig.imuDcmKi;
-            integralFBx += dcmKiGain * (accDiff.x + ex) * dt;    // integral error scaled by Ki
-            integralFBy += dcmKiGain * (accDiff.y + ey) * dt;
-            integralFBz += dcmKiGain * (accDiff.z + ez) * dt;
+            integralFBx += config->imuDcmKi * (accDiff.x + ex) * dt;    // integral error scaled by Ki
+            integralFBy += config->imuDcmKi * (accDiff.y + ey) * dt;
+            integralFBz += config->imuDcmKi * (accDiff.z + ez) * dt;
         }
     } else {
         integralFBx = 0.0f;    // prevent integral windup
@@ -304,9 +371,9 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt,
 
     // Add errors and integrate rate of change of quaternion
     // accRPGain is already time normalized and should not be multiplied with dt
-    gx = (gx + imuRuntimeConfig.imuDcmKp * ex + integralFBx) * dt + accRPGain * accDiff.x;
-    gy = (gy + imuRuntimeConfig.imuDcmKp * ey + integralFBy) * dt + accRPGain * accDiff.y;
-    gz = (gz + imuRuntimeConfig.imuDcmKp * ez + integralFBz) * dt + accRPGain * accDiff.z;
+    gx = (gx + config->imuDcmKp * ex + integralFBx) * dt + accRPGain * accDiff.x;
+    gy = (gy + config->imuDcmKp * ey + integralFBy) * dt + accRPGain * accDiff.y;
+    gz = (gz + config->imuDcmKp * ez + integralFBz) * dt + accRPGain * accDiff.z;
 
     gx *= 0.5f;
     gy *= 0.5f;
@@ -350,59 +417,6 @@ STATIC_UNIT_TESTED void imuUpdateEulerAngles(void)
 
     if (attitude.values.yaw < 0) {
         attitude.values.yaw += 3600;
-    }
-}
-
-// Increase Roll/Pitch estimate covariance based on time spent integrating
-// Update the estimate covariance according to P_k = (1 - K_k) * P_k-1 + w(t)
-// w(t) is the gyro noise and is assumed to be normaldistributed with zero mean.
-// A much higher covariance is used when the gyro is saturated, but the noise is still modeled
-// as being normal distributed.
-// estimateCovariance covariance of the estimate
-// accGain kalman gain for the accelerometer
-// imuDt total time delta since last ahrs update
-// durationSaturated duration that the gyro has been saturated since last update
-// gyroCovariance covariance of the gyro under normal (non saturated) circumstances
-static void imuUpdateRPEstimateCovariance(float *estimateCovariance, const float accGain, const float imuDt, float durationSaturated, const float gyroCovariance)
-{
-    if (durationSaturated > imuDt) { durationSaturated = imuDt; }
-    const float normalDuration = imuDt - durationSaturated;
-    const float accumulatedCovariance = gyroCovariance * normalDuration + IMU_GYRO_PSD_SATURATED * durationSaturated;
-    const float updatedCovariance = (1.0f - accGain) * (*estimateCovariance) + accumulatedCovariance;
-    *estimateCovariance = constrainf(updatedCovariance, 0.0f, IMU_ESTIMATE_COVARIANCE_MAXIMUM);
-}
-
-static float imuCalcGyroPsd(const float basePsd, const float gyroNorm)
-{
-    return basePsd + basePsd * gyroNorm * IMU_GYRO_COVARIANCE_CALC_RATE_SCALING;
-}
-
-/// Approximate the accelerometer covariance based on  the accelerometer vector norm
-/// and gyro rates.
-/// will return 0.0 if the measurement is considered unusable
-/// @arg baseAccCovariance best case scenario accelerometer covariance
-/// @arg accNorm norm of the accelerometer vector in g
-/// @arg gyroNorm norm of the gyrp rate vector in degrees per second
-static float imuAccCovariance(const float baseAccCovariance, const float accNorm, const float gyroNorm)
-{   // return 0 if the norm of the accelerometer vector differs more than this from 1.0g (ca 9.8 m/s)
-    const float accLimit = IMU_ACC_COVARIANCE_CALC_ACC_NORM_LIMIT;
-    // [deg/s] return 0 if the norm of the gyro rates are above this value
-    const float gyroLimit = IMU_ACC_COVARIANCE_CALC_GYRO_NORM_LIMIT;
-    // Use acceleromter, but increase the covariance by how much the
-    // gyro and acc vector norms differs from the ideal
-    const float accTrust = tent(accNorm - 1.0f, accLimit) * tent(gyroNorm, gyroLimit);
-
-    const float epsilon = 0.01f;
-    return accTrust > epsilon ? baseAccCovariance / accTrust : 0.0f;
-}
-
-// Calculate Kalman gain for accelerometer
-static float imuCalcAccGain(const float dt, const float estimateCovariance, const float accCovariance)
-{
-    if (accCovariance > 0.0f) {
-        return estimateCovariance / (estimateCovariance + accCovariance / dt);
-    } else {
-        return 0.0f;
     }
 }
 
@@ -610,16 +624,6 @@ static void imuComputeQuaternionFromRPY(quaternionProducts *quatProd, int16_t in
 }
 #endif
 
-static float imuUpdateDeviation(const float deviation, const float imuDt, const float durationSaturated)
-{
-    // Increase estiumated deviation based on time spent integrating
-    static const float err_rate_saturated = 500.0f; // guestimated gyro drift in deg/s when saturated
-    static const float err_rate_normal = 5.0f;  // static gyro drift in deg/s under normal circumstances
-    const float normal_duration = imuDt - durationSaturated;
-    const float accumulated_error = err_rate_normal * normal_duration + err_rate_saturated * durationSaturated;
-    return constrainf(deviation + accumulated_error, 0.0f, 180.0f);
-}
-
 #if defined(SIMULATOR_BUILD) && !defined(USE_IMU_CALC)
 static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
 {
@@ -657,7 +661,7 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
     previousIMUUpdateTime = currentTimeUs;
     if (deltaT > 100000) { // do not update attitude if the time delta is over 0.1s, to prevent weirdnes at startup
 #if defined(USE_ACC)
-        rpEstimateCovariance = IMU_ESTIMATE_COVARIANCE_MAXIMUM;
+        imuRpEstimateCovariance = IMU_ESTIMATE_COVARIANCE_MAXIMUM;
 #endif
         return;
     }
@@ -722,30 +726,14 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
     }
 
 
-
-    const fpVector3_t accVector = {.x = acc.accADC[X], .y = acc.accADC[Y], .z = acc.accADC[Z]};
-    const fpVector3_t gyroVector = {.x = gyroAverage[X], .y = gyroAverage[Y], .z = gyroAverage[Z]};
-    const float accNorm = vectorNorm(&accVector) * acc.dev.acc_1G_rec;
-    const float gyroNorm = vectorNorm(&gyroVector);
-
-    const float accCovariance = imuAccCovariance(imuRuntimeConfig.acc_covariance, accNorm, gyroNorm);
-    const float accRPGain = imuCalcAccGain(dt, rpEstimateCovariance, accCovariance);
-
-    imuMahonyAHRSupdate(dt,
+    imuMahonyAHRSupdate(dt, &imuRuntimeConfig,
                         DEGREES_TO_RADIANS(gyroAverage[X]), DEGREES_TO_RADIANS(gyroAverage[Y]), DEGREES_TO_RADIANS(gyroAverage[Z]),
-                        accRPGain, acc.accADC[X], acc.accADC[Y], acc.accADC[Z],
+                        &imuRpEstimateCovariance, gyroGetDurationSpentSaturated(),
+                        acc.accADC[X], acc.accADC[Y], acc.accADC[Z],
                         magErr, cogErr);
 
     imuUpdateEulerAngles();
 
-    const float gyroPsd = imuCalcGyroPsd(imuRuntimeConfig.gyro_noise_psd, gyroNorm);
-    imuUpdateRPEstimateCovariance(&rpEstimateCovariance, accRPGain, dt, gyroGetDurationSpentSaturated(), gyroPsd);
-
-    DEBUG_SET(DEBUG_IMU_GAIN, 0, lrintf(1000.0f * accRPGain / dt));
-    DEBUG_SET(DEBUG_IMU_GAIN, 1, lrintf(10.0f * RADIANS_TO_DEGREES(sqrtf(rpEstimateCovariance))));
-    DEBUG_SET(DEBUG_IMU_GAIN, 3, lrintf(10.0f * RADIANS_TO_DEGREES(sqrtf(accCovariance))));
-    DEBUG_SET(DEBUG_IMU_GAIN, 4, lrintf(accNorm * 100.0f));
-    DEBUG_SET(DEBUG_IMU_GAIN, 5, lrintf(gyroNorm * 1.0f));
 #endif
 }
 
