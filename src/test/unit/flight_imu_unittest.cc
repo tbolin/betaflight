@@ -29,7 +29,6 @@ extern "C" {
     #include "common/vector.h"
 
     #include "config/feature.h"
-    #include "config/config_reset.h"
     #include "pg/pg.h"
     #include "pg/pg_ids.h"
     #include "pg/rx.h"
@@ -59,8 +58,10 @@ extern "C" {
 
     void imuComputeRotationMatrix(void);
     void imuUpdateEulerAngles(void);
-    void imuMahonyAHRSupdate(float dt, float gx, float gy, float gz,
-                             const float accRPGain, float ax, float ay, float az,
+    void imuMahonyAHRSupdate(float dt, const imuRuntimeConfig_t* config,
+                             float gx, float gy, float gz,
+                             float* rpEstimateCovariance, const float durationSaturated,
+                             float ax, float ay, float az,
                              bool useMag,
                              float cogYawGain, float courseOverGround);
     extern quaternion q;
@@ -238,12 +239,18 @@ testing::AssertionResult DoubleNearWrapPredFormat(const char* expr1, const char*
     EXPECT_PRED_FORMAT4(DoubleNearWrapPredFormat, val1, val2, \
                         abs_error, 2 * M_PI)
 
-
+static const imuRuntimeConfig_t DEFAULT_RUNTIME_CONFIG = {
+    .dcm_ki = 0.0,
+    .dcm_kp = 0.25,
+    .gyro_noise_psd = 0.5f,
+    .acc_covariance = 5.0f,
+};
 
 class MahonyFixture : public ::testing::Test {
 protected:
     fpVector3_t gyro;
-    float acRPGain;
+    float rpEstimateCovariance;
+    float timeSaturated;
     fpVector3_t acc;
     bool useMag;
     fpVector3_t magEF;
@@ -251,15 +258,17 @@ protected:
     float cogDeg;
     float dcmKp;
     float dt;
+    imuRuntimeConfig_t config;
     void SetUp() override {
         vectorZero(&gyro);
-        acRPGain = 0.0f;
+        rpEstimateCovariance = sq(DEGREES_TO_RADIANS(180.0f));
+        timeSaturated = 0.0f;
         vectorZero(&acc);
         cogGain = 0.0;   // no cog
         cogDeg  = 0.0;
         dcmKp = .25;     // default dcm_kp
         dt = 1e-2;       // 100Hz update
-        pgResetAll();
+        config = DEFAULT_RUNTIME_CONFIG;
         imuConfigure(0, 0);
         // level, poiting north
         setOrientationAA(0, {{1,0,0}});        // identity
@@ -290,9 +299,10 @@ protected:
         float alignTime = -1;
         for (float t = 0; t < runTime; t += dt) {
             //     if (fmod(t, 1) < dt) printf("MagBF=%.2f %.2f %.2f\n", magBF.x, magBF.y, magBF.z);
-            imuMahonyAHRSupdate(dt,
+            imuMahonyAHRSupdate(dt, &config,
                                 gyro.x, gyro.y, gyro.z,
-                                acRPGain, acc.x, acc.y, acc.z,
+                                &rpEstimateCovariance, timeSaturated,
+                                acc.x, acc.y, acc.z,
                                 useMag,                             // no mag now
                                 cogGain, DEGREES_TO_RADIANS(cogDeg));   // use Cog, param direction
             imuUpdateEulerAngles();
