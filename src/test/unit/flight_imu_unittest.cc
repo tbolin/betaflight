@@ -240,8 +240,8 @@ testing::AssertionResult DoubleNearWrapPredFormat(const char* expr1, const char*
                         abs_error, 2 * M_PI)
 
 static const imuRuntimeConfig_t DEFAULT_RUNTIME_CONFIG = {
-    .dcm_ki = 0.0,
-    .dcm_kp = 0.25,
+    .imuDcmKi = 0.0,
+    .imuDcmKp = 0.25,
     .gyro_noise_psd = 0.5f,
     .acc_covariance = 5.0f,
 };
