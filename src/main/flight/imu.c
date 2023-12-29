@@ -420,6 +420,8 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt, const imuRuntimeConfig_t* 
             vectorScale(&accDiff, &accDiff, 1.0f - dot);
         }
         DEBUG_SET(DEBUG_IMU_GAIN, 2, lrintf(RADIANS_TO_DEGREES(acos_approx(dot)) * 10.0f));
+    } else {
+        DEBUG_SET(DEBUG_IMU_GAIN, 2, 0);
     }
 
     // update roll pitch estimate covariance
@@ -559,6 +561,7 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
 #endif
         return;
     }
+    DEBUG_SET(DEBUG_IMU_GAIN, 6, deltaT);
 
 #ifdef USE_MAG
     if (sensors(SENSOR_MAG) && compassIsHealthy()
