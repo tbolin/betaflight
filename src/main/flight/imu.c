@@ -394,7 +394,7 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt, const imuRuntimeConfig_t* 
     fpVector3_t acc_bf =  {.x = ax, .y = ay, .z = az};
     const float accNorm = vectorNorm(&acc_bf);
 
-    const float accCovariance = imuAccCovariance(config->acc_covariance, accNorm, gyroNorm);
+    const float accCovariance = imuAccCovariance(config->acc_covariance, accNorm * acc.dev.acc_1G_rec, gyroNorm);
     const float accRPGain = imuCalcAccGain(dt, *rpEstimateCovariance, accCovariance);
 
     fpVector3_t accDiff;
@@ -429,7 +429,7 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt, const imuRuntimeConfig_t* 
     DEBUG_SET(DEBUG_IMU_GAIN, 0, lrintf(1000.0f * accRPGain / dt));
     DEBUG_SET(DEBUG_IMU_GAIN, 1, lrintf(10.0f * RADIANS_TO_DEGREES(sqrtf(*rpEstimateCovariance))));
     DEBUG_SET(DEBUG_IMU_GAIN, 3, lrintf(10.0f * RADIANS_TO_DEGREES(sqrtf(accCovariance))));
-    DEBUG_SET(DEBUG_IMU_GAIN, 4, lrintf(accNorm * 100.0f));
+    DEBUG_SET(DEBUG_IMU_GAIN, 4, lrintf(accNorm * acc.dev.acc_1G_rec * 100.0f));
     DEBUG_SET(DEBUG_IMU_GAIN, 5, lrintf(gyroNorm * 1.0f));
 
     // Compute and apply integral feedback if enabled
