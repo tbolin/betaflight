@@ -430,7 +430,7 @@ extern "C" {
     void schedulerIgnoreTaskStateTime(void) {}
     void schedulerSetNextStateTime(timeDelta_t) {}
     bool schedulerGetIgnoreTaskExecTime() { return false; }
-    float gyroGetFilteredDownsampled(int) { return 0.0f; }
+    float gyroGetDeltaForImu(int) { return 0.0f; }
     float baroUpsampleAltitude()  { return 0.0f; }
     float pt2FilterGain(float, float)  { return 0.0f; }
     float getBaroAltitude(void) { return 3000.0f; }

@@ -77,7 +77,7 @@ static FAST_DATA_ZERO_INIT bool yawSpinDetected;
 static FAST_DATA_ZERO_INIT timeUs_t yawSpinTimeUs;
 #endif
 
-static FAST_DATA_ZERO_INIT float gyroFilteredDownsampled[XYZ_AXIS_COUNT];
+static FAST_DATA_ZERO_INIT float gyroDeltaForImu[XYZ_AXIS_COUNT]; // change since last IMU integration
 static float gyroDurationSpentSaturated = 0.0f;
 
 static FAST_DATA_ZERO_INIT int16_t gyroSensorTemperature;
@@ -540,9 +540,15 @@ FAST_CODE void gyroFiltering(timeUs_t currentTimeUs)
 #endif
 
     if (!overflowDetected) {
-        for (int axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
-            gyroFilteredDownsampled[axis] = pt1FilterApply(&gyro.imuGyroFilter[axis], gyro.gyroADCf[axis]);
+        static timeUs_t previousTime = 0;
+        timeUs_t deltaT = currentTimeUs - previousTime;
+        if (deltaT > 10000) {
+            const float dt = deltaT * 1e-6;
+            for (int axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
+                gyroDeltaForImu[axis] += gyro.gyroADC[axis] * dt;
+            }
         }
+        previousTime = currentTimeUs;
     }
     // consider gyro saturated if abs rate exceeds 1950 deg/s
     // exactly 2000 degrees would be better, but gyroADC includes a zeroing offset
@@ -560,9 +566,11 @@ FAST_CODE void gyroFiltering(timeUs_t currentTimeUs)
 #endif
 }
 
-float gyroGetFilteredDownsampled(int axis)
+float gyroGetDeltaForImu(int axis)
 {
-    return gyroFilteredDownsampled[axis];
+    const float value = gyroDeltaForImu[axis];
+    gyroDeltaForImu[axis] = 0.0f;
+    return value;
 }
 
 float gyroGetDurationSpentSaturated(void)

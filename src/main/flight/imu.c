@@ -131,6 +131,8 @@ PG_REGISTER_WITH_RESET_TEMPLATE(imuConfig_t, imuConfig, PG_IMU_CONFIG, 3);
 #define DEFAULT_SMALL_ANGLE 25
 #endif
 
+void imuQuaternionMultiplication(const quaternion *q1, const quaternion *q2, quaternion *result);
+
 PG_RESET_TEMPLATE(imuConfig_t, imuConfig,
     .imu_dcm_kp = 2500,      // 1.0 * 10000
     .imu_dcm_ki = 0,         // 0.003 * 10000
@@ -186,6 +188,33 @@ static float calculateThrottleAngleScale(uint16_t throttle_correction_angle)
 {
     return (1800.0f / M_PIf) * (900.0f / throttle_correction_angle);
 }
+
+static void rotationVectorToQuaternion(quaternion* out, const fpVector3_t* rotation)
+{
+    float norm = vectorNorm(rotation);
+    float imag_coeff = sin_approx(norm * 0.5) / norm;
+    out->w = cos_approx(norm * 0.5);
+    out->x = rotation->x * imag_coeff;
+    out->y = rotation->y * imag_coeff;
+    out->z = rotation->z * imag_coeff;
+}
+
+// static void rotateVectorWithQuaternion(fpVector3_t* out, const fpVector3_t* in, const quaternion* rotation)
+// {
+//     const fpVector3_t vector_part = {.x = rotation->x, .y = rotation->y, .z = rotation->z};
+//     const float scalar = rotation->w;
+
+//     const float u = 2.0f * vector3Dot(&vector_part, in);
+//     const float v = sq(scalar) - vector3Dot(&vector_part, &vector_part);
+//     const fpVector3_t cross = {
+//         .x = 2.0f * scalar * (vector_part.y * in->z - vector_part.z * in->y),
+//         .y = 2.0f * scalar * (vector_part.x * in->z - vector_part.z * in->x),
+//         .z = 2.0f * scalar * (vector_part.x * in->y - vector_part.y * in->x),
+//     };
+//     out->x = u * vector_part.x + v * in->x - cross.x;
+//     out->y = u * vector_part.y + v * in->y - cross.y;
+//     out->z = u * vector_part.z + v * in->z - cross.z;
+// }
 
 void imuConfigure(uint16_t throttle_correction_angle, uint8_t throttle_correction_value)
 {
@@ -294,7 +323,8 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt, const imuRuntimeConfig_t* 
     static float integralFBx = 0.0f,  integralFBy = 0.0f, integralFBz = 0.0f;    // integral error terms scaled by Ki
 
     // Calculate general spin rate (rad/s)
-    const float spin_rate = sqrtf(sq(gx) + sq(gy) + sq(gz));
+    const fpVector3_t gyroVector = {.x = gx, .y = gy, .z = gz};
+    const float gyroNorm = vectorNorm(&gyroVector) / dt;
 
     // Use raw heading error (from GPS or whatever else)
     float ex = 0, ey = 0, ez = 0;
@@ -388,9 +418,6 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt, const imuRuntimeConfig_t* 
 #endif
 
     // Use measured acceleration vector
-    const fpVector3_t gyroVector = {.x = gx, .y = gy, .z = gz};
-    const float gyroNorm = vectorNorm(&gyroVector);
-
     fpVector3_t acc_bf =  {.x = ax, .y = ay, .z = az};
     const float accNorm = vectorNorm(&acc_bf);
 
@@ -437,7 +464,7 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt, const imuRuntimeConfig_t* 
     // Compute and apply integral feedback if enabled
     if (config->imuDcmKi > 0.0f) {
         // Stop integrating if spinning beyond the certain limit
-        if (spin_rate < DEGREES_TO_RADIANS(SPIN_RATE_LIMIT)) {
+        if (gyroNorm < DEGREES_TO_RADIANS(SPIN_RATE_LIMIT)) {
             integralFBx += config->imuDcmKi * (accDiff.x + ex) * dt;    // integral error scaled by Ki
             integralFBy += config->imuDcmKi * (accDiff.y + ey) * dt;
             integralFBz += config->imuDcmKi * (accDiff.z + ez) * dt;
@@ -450,20 +477,15 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt, const imuRuntimeConfig_t* 
 
     // Add errors and integrate rate of change of quaternion
     // accRPGain is already time normalized and should not be multiplied with dt
-    gx = (gx + config->imuDcmKp * ex + integralFBx) * dt + accRPGain * accDiff.x;
-    gy = (gy + config->imuDcmKp * ey + integralFBy) * dt + accRPGain * accDiff.y;
-    gz = (gz + config->imuDcmKp * ez + integralFBz) * dt + accRPGain * accDiff.z;
+    gx = gx + (config->imuDcmKp * ex + integralFBx) * dt + accRPGain * accDiff.x;
+    gy = gy + (config->imuDcmKp * ey + integralFBy) * dt + accRPGain * accDiff.y;
+    gz = gz + (config->imuDcmKp * ez + integralFBz) * dt + accRPGain * accDiff.z;
 
-    gx *= 0.5f;
-    gy *= 0.5f;
-    gz *= 0.5f;
+    const fpVector3_t rot_vector = {.x = gx, .y = gy, .z = gz};
+    quaternion buffer;
 
-    const quaternion buffer = q;
-
-    q.w += (-buffer.x * gx - buffer.y * gy - buffer.z * gz);
-    q.x += (+buffer.w * gx + buffer.y * gz - buffer.z * gy);
-    q.y += (+buffer.w * gy - buffer.x * gz + buffer.z * gx);
-    q.z += (+buffer.w * gz + buffer.x * gy - buffer.y * gx);
+    rotationVectorToQuaternion(&buffer, &rot_vector);
+    imuQuaternionMultiplication(&q, &buffer, &q);
 
     // Normalise quaternion
     float recipNorm = invSqrt(sq(q.w) + sq(q.x) + sq(q.y) + sq(q.z));
@@ -613,7 +635,7 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
 #endif
     float gyroAverage[XYZ_AXIS_COUNT];
     for (int axis = 0; axis < XYZ_AXIS_COUNT; ++axis) {
-        gyroAverage[axis] = gyroGetFilteredDownsampled(axis);
+        gyroAverage[axis] = gyroGetDeltaForImu(axis);
     }
 
     const float dt = deltaT * 1e-6f;
@@ -766,7 +788,7 @@ bool imuQuaternionHeadfreeOffsetSet(void)
     }
 }
 
-void imuQuaternionMultiplication(quaternion *q1, quaternion *q2, quaternion *result)
+void imuQuaternionMultiplication(const quaternion *q1, const quaternion *q2, quaternion *result)
 {
     const float A = (q1->w + q1->x) * (q2->w + q2->x);
     const float B = (q1->z - q1->y) * (q2->y - q2->z);
