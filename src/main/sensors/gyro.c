@@ -41,6 +41,7 @@
 
 #include "drivers/bus_spi.h"
 #include "drivers/io.h"
+#include "drivers/system.h"
 
 #include "config/config.h"
 #include "fc/runtime_config.h"
@@ -413,7 +414,7 @@ static FAST_CODE void gyroUpdateSensor(gyroSensor_t *gyroSensor)
     }
 }
 
-FAST_CODE void gyroUpdate(void)
+FAST_CODE void gyroUpdate(timeUs_t currentTimeUs)
 {
     switch (gyro.gyroToUse) {
     case GYRO_CONFIG_USE_GYRO_1:
@@ -461,6 +462,19 @@ FAST_CODE void gyroUpdate(void)
         gyro.sampleSum[Z] += gyro.gyroADC[Z];
         gyro.sampleCount++;
     }
+
+    // integrate gyro rates for imu calculations
+    static uint32_t previousTicks = 0;
+    const bool interruptEnabled = gyro.gyroSensor1.gyroDev.gyroModeSPI != GYRO_EXTI_NO_INT;
+    uint32_t currentTicks = interruptEnabled ? gyro.gyroSensor1.gyroDev.gyroLastEXTI : currentTimeUs;
+
+    const float deltaT = (interruptEnabled ? clockCyclesToMicrosf(currentTicks - previousTicks) : (currentTicks - previousTicks)) * 1e-6f;
+    if (deltaT > 0.0f && deltaT < 0.1f ) {
+        for (int axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
+            gyroDeltaForImu[axis] += gyro.gyroADC[axis] * deltaT;
+        }
+    }
+    previousTicks = currentTicks;
 }
 
 #define GYRO_FILTER_FUNCTION_NAME filterGyro
@@ -530,6 +544,12 @@ FAST_CODE void gyroFiltering(timeUs_t currentTimeUs)
 #ifdef USE_GYRO_OVERFLOW_CHECK
     if (gyroConfig()->checkOverflow && !gyro.gyroHasOverflowProtection) {
         checkForOverflow(currentTimeUs);
+        // reset integrated gyro values if an overflow is detected
+        if (overflowDetected) {
+            for (int axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
+                gyroDeltaForImu[axis] = 0.0f;
+            }
+        }
     }
 #endif
 
@@ -539,17 +559,6 @@ FAST_CODE void gyroFiltering(timeUs_t currentTimeUs)
     }
 #endif
 
-    if (!overflowDetected) {
-        static timeUs_t previousTime = 0;
-        timeUs_t deltaT = currentTimeUs - previousTime;
-        if (deltaT > 10000) {
-            const float dt = deltaT * 1e-6;
-            for (int axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
-                gyroDeltaForImu[axis] += gyro.gyroADC[axis] * dt;
-            }
-        }
-        previousTime = currentTimeUs;
-    }
     // consider gyro saturated if abs rate exceeds 1950 deg/s
     // exactly 2000 degrees would be better, but gyroADC includes a zeroing offset
     // so the gyro might saturate at lower levels

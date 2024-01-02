@@ -1241,8 +1241,7 @@ static FAST_CODE_NOINLINE void subTaskRcCommand(timeUs_t currentTimeUs)
 
 FAST_CODE void taskGyroSample(timeUs_t currentTimeUs)
 {
-    UNUSED(currentTimeUs);
-    gyroUpdate();
+    gyroUpdate(currentTimeUs);
     if (pidUpdateCounter % activePidLoopDenom == 0) {
         pidUpdateCounter = 0;
     }

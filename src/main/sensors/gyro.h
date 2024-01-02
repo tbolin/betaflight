@@ -202,7 +202,7 @@ typedef struct gyroConfig_s {
 
 PG_DECLARE(gyroConfig_t, gyroConfig);
 
-void gyroUpdate(void);
+void gyroUpdate(timeUs_t currentTimeUs);
 void gyroFiltering(timeUs_t currentTimeUs);
 float gyroGetDeltaForImu(int axis);
 float gyroGetDurationSpentSaturated(void);
