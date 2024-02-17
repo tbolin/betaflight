@@ -504,6 +504,17 @@ static void applyMixerAdjustmentLinear(float *motorMix, const bool airmodeEnable
 
 static float calcEzLandLimit(float maxDeflection)
 {
+#ifdef USE_FEEDFORWARD
+    float ff_sum = 0.0f;
+    for (int i = 0; i < XYZ_AXIS_COUNT; ++i)
+    {
+        ff_sum += getFeedforward(i);
+    }
+    ff_sum *= mixerRuntime.ezLandingFfGain / PID_MIXER_SCALING;
+    DEBUG_SET(DEBUG_EZLANDING, 5, lrintf(ff_sum / mixerRuntime.ezLandingThreshold * 10000.0f));
+    maxDeflection += ff_sum;
+#endif /* USE_FEEDFORWARD */
+
     // calculate limit to where the mixer can raise the throttle based on RPY stick deflection
     // 0.0 = no increas allowed, 1.0 = 100% increase allowed
     float ezLandLimit = 1.0f;
