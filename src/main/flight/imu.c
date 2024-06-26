@@ -631,20 +631,15 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
 {
     // unused static functions
     UNUSED(imuMahonyAHRSupdate);
-    UNUSED(imuIsAccelerometerHealthy);
     UNUSED(canUseGPSHeading);
-    UNUSED(imuCalcKpGain);
     UNUSED(imuCalcMagErr);
     UNUSED(imuAccCovariance);
     UNUSED(imuCalcAccGain);
-    UNUSED(imuCalcGyroCovariance);
     UNUSED(imuUpdateRPEstimateCovariance);
     UNUSED(IMU_ACC_COVARIANCE_CALC_ACC_NORM_LIMIT);
     UNUSED(IMU_ACC_COVARIANCE_CALC_GYRO_NORM_LIMIT);
     UNUSED(IMU_GYRO_COVARIANCE_CALC_RATE_SCALING);
-    UNUSED(IMU_GYRO_COVARIANCE_SATURATED);
     UNUSED(IMU_ESTIMATE_COVARIANCE_MAXIMUM);
-    UNUSED(rpEstimateCovariance);
     UNUSED(imuCalcGyroPsd);
 
     UNUSED(currentTimeUs);
