@@ -137,7 +137,7 @@ PG_RESET_TEMPLATE(imuConfig_t, imuConfig,
     .imu_process_denom = 2,
     .mag_declination = 0,
     .gyro_noise_asd = 5,           // 0.5 (deg/s)/sqrt(s)
-    .acc_noise_std = 50,           // 5.0 deg/s
+    .acc_noise_std = 50,           // 5.0 deg
 );
 
 static void imuResetEstimateCovariance(void)
@@ -250,6 +250,8 @@ static void imuUpdateRPEstimateCovariance(float *estimateCovariance, const float
     *estimateCovariance = constrainf(updatedCovariance, 0.0f, IMU_ESTIMATE_COVARIANCE_MAXIMUM);
 }
 
+
+// Calculate gyro power spectrum density
 static float imuCalcGyroPsd(const float basePsd, const float gyroNorm)
 {
     return basePsd + basePsd * RADIANS_TO_DEGREES(gyroNorm) * IMU_GYRO_COVARIANCE_CALC_RATE_SCALING;
@@ -275,13 +277,22 @@ static float imuAccCovariance(const float baseAccCovariance, const float accNorm
 }
 
 // Calculate Kalman gain for accelerometer
-static float imuCalcAccGain(const float dt, const float estimateCovariance, const float accCovariance)
+static float imuCalcKalmanGain(const float estimateCovariance, const float measurementCovariance)
 {
-    if (accCovariance > 0.0f) {
-        return estimateCovariance / (estimateCovariance + accCovariance / dt);
+    const float inovationCovariance = estimateCovariance + measurementCovariance;
+    if (inovationCovariance > 0.0f && measurementCovariance > 0.0f) {
+        // limit the gain to avoid converging to fast at large errors and high estimate covariance
+        // large errors and gains will converge to the wrong attitude due to approximatons in the integration scheme
+        return constrainf(estimateCovariance / inovationCovariance, 0.0f, 0.5f);
     } else {
         return 0.0f;
     }
+}
+
+static bool imuIsMahalanobisOutlier(const float estimateCovariance, const float measurementCovariance, const float diff, const float treshold)
+{
+    const float inovationCovariance = estimateCovariance + measurementCovariance;
+    return (sq(diff) >= treshold * inovationCovariance) && treshold != 0.0f;
 }
 
 // g[xyz] - gyro reading, in rad/s
@@ -310,39 +321,43 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt, const imuRuntimeConfig_t* 
 
     DEBUG_SET(DEBUG_ATTITUDE, 3, (headingErrCog * 100));
 
-    // Use measured acceleration vector
     const fpVector3_t gyroVector = {.x = gx, .y = gy, .z = gz};
     const float gyroNorm = vectorNorm(&gyroVector);
 
+    // Use measured acceleration vector
     fpVector3_t acc_bf =  {.x = ax, .y = ay, .z = az};
     const float accNorm = vectorNorm(&acc_bf);
+    vectorNormalize(&acc_bf, &acc_bf);
+
+    // estimated roll pitch vector in body frame
+    const fpVector3_t estRP_bf = {.x = rMat[2][0], .y = rMat[2][1], .z = rMat[2][2]};
+
+    const float accAngleError = acos_approx(vector3Dot(&acc_bf, &estRP_bf));
+
+    // chech if the acc measurement should be considered an outlier
+#if defined(USE_GPS_RESCUE)
+    const bool gpsRescueActive = FLIGHT_MODE(GPS_RESCUE_MODE);
+#else
+    const bool gpsRescueActive = false;
+#endif
+    const float outlierThreshold = gpsRescueActive || !(ARMING_FLAG(ARMED)) ? 0.0f : 2.0f;
+    const bool notOutlier = !imuIsMahalanobisOutlier(*rpEstimateCovariance, config->acc_covariance, accAngleError, outlierThreshold);
 
     const float accCovariance = imuAccCovariance(config->acc_covariance, accNorm * acc.dev.acc_1G_rec, gyroNorm);
-    const float accRPGain = imuCalcAccGain(dt, *rpEstimateCovariance, accCovariance);
+    const float accRPGain = notOutlier ? imuCalcKalmanGain(*rpEstimateCovariance, accCovariance) : 0.0f;
 
     fpVector3_t accDiff;
     vectorZero(&accDiff);
 
-    if (accRPGain > 0.0f && accNorm > 0.01f) {
-        // Normalise accelerometer measurement; useAcc is true when all smoothed acc axes are within 20% of 1G
-        const float recipAccNorm = 1.0f / accNorm;
-        vectorScale(&acc_bf, &acc_bf, recipAccNorm);
-
-        fpVector3_t estRP_bf = {.x = rMat[2][0], .y = rMat[2][1], .z = rMat[2][2]};
-
-        // Difference is sum of cross product between estimated direction and measured direction of gravity
+    if (accRPGain > 0.0f) {
+        // Difference is the cross product between estimated direction and measured direction of gravity
         vectorCrossProduct(&accDiff, &acc_bf, &estRP_bf);
-
-        const float dot = vector3Dot(&acc_bf, &estRP_bf);
-
-        // To avoid the gain decreasing for angles > 90 degrees:
-        // set magnitude of error vector to 1 + |cos| of angle between estimated
-        // and measured downwards vectors if the absolute angle of the error is > 90 degrees
-        if (dot <= 0.0f) {
-            vectorNormalize(&accDiff, &accDiff);
-            vectorScale(&accDiff, &accDiff, 1.0f - dot);
+        const float accDiffNormSq = vectorNormSquared(&accDiff);
+        if (accDiffNormSq > 0.001f) {  // scale larger errors with the actual magnitude of the angle
+            vectorScale(&accDiff, &accDiff, accAngleError / sqrtf(accDiffNormSq));
         }
-        DEBUG_SET(DEBUG_IMU_GAIN, 2, lrintf(RADIANS_TO_DEGREES(acos_approx(dot)) * 10.0f));
+
+        DEBUG_SET(DEBUG_IMU_GAIN, 2, lrintf(RADIANS_TO_DEGREES(accAngleError) * 10.0f));
     } else {
         DEBUG_SET(DEBUG_IMU_GAIN, 2, 0);
     }
@@ -351,11 +366,12 @@ STATIC_UNIT_TESTED void imuMahonyAHRSupdate(float dt, const imuRuntimeConfig_t* 
     const float gyroPsd = imuCalcGyroPsd(config->gyro_noise_psd, gyroNorm);
     imuUpdateRPEstimateCovariance(rpEstimateCovariance, accRPGain, dt, durationSaturated, gyroPsd);
 
-    DEBUG_SET(DEBUG_IMU_GAIN, 0, lrintf(1000.0f * accRPGain / dt));
+    DEBUG_SET(DEBUG_IMU_GAIN, 0, lrintf(1000.0f * accRPGain));
     DEBUG_SET(DEBUG_IMU_GAIN, 1, lrintf(10.0f * RADIANS_TO_DEGREES(sqrtf(*rpEstimateCovariance))));
     DEBUG_SET(DEBUG_IMU_GAIN, 3, lrintf(10.0f * RADIANS_TO_DEGREES(sqrtf(accCovariance))));
     DEBUG_SET(DEBUG_IMU_GAIN, 4, lrintf(accNorm * acc.dev.acc_1G_rec * 100.0f));
-    DEBUG_SET(DEBUG_IMU_GAIN, 5, lrintf(gyroNorm * 1.0f));
+    DEBUG_SET(DEBUG_IMU_GAIN, 5, lrintf(RADIANS_TO_DEGREES(gyroNorm)));
+    DEBUG_SET(DEBUG_IMU_GAIN, 7, lrintf(RADIANS_TO_DEGREES(accAngleError) * 10.0f));
 
     // Compute and apply integral feedback if enabled
     if (config->imuDcmKi > 0.0f) {
@@ -633,9 +649,9 @@ static void imuCalculateEstimatedAttitude(timeUs_t currentTimeUs)
     UNUSED(imuMahonyAHRSupdate);
     UNUSED(canUseGPSHeading);
     UNUSED(imuCalcMagErr);
-    UNUSED(imuAccCovariance);
-    UNUSED(imuCalcAccGain);
+    UNUSED(imuCalcKalmanGain);
     UNUSED(imuUpdateRPEstimateCovariance);
+    UNUSED(imuIsMahalanobisOutlier);
     UNUSED(IMU_ACC_COVARIANCE_CALC_ACC_NORM_LIMIT);
     UNUSED(IMU_ACC_COVARIANCE_CALC_GYRO_NORM_LIMIT);
     UNUSED(IMU_GYRO_COVARIANCE_CALC_RATE_SCALING);
