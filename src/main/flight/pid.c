@@ -928,10 +928,10 @@ void FAST_CODE pidController(const pidProfile_t *pidProfile, timeUs_t currentTim
     // used later to increase iTerm
 
     // iTerm windup (attenuation of iTerm if motorMix range is large)
-    float dynCi = 1.0;
-    if (pidRuntime.itermWindupPointInv > 1.0f) {
-        dynCi = constrainf((1.0f - getMotorMixRange()) * pidRuntime.itermWindupPointInv, 0.0f, 1.0f);
-    }
+    // float dynCi = 1.0;
+    // if (pidRuntime.itermWindupPointInv > 1.0f) {
+    //     dynCi = constrainf((1.0f - getMotorMixRange()) * pidRuntime.itermWindupPointInv, 0.0f, 1.0f);
+    // }
 
     // Precalculate gyro delta for D-term here, this allows loop unrolling
     float gyroRateDterm[XYZ_AXIS_COUNT];
@@ -1062,7 +1062,8 @@ void FAST_CODE pidController(const pidProfile_t *pidProfile, timeUs_t currentTim
             }
         }
 
-        float iTermChange = (Ki + pidRuntime.itermAccelerator) * dynCi * pidRuntime.dT * itermErrorRate;
+        const bool preventWindup = getMotorMixRange() >= 1.0f && fabsf(pidData[axis].Sum + itermErrorRate) > fabsf(pidData[axis].Sum);
+        float iTermChange = preventWindup ? 0.0f : (Ki + pidRuntime.itermAccelerator) * pidRuntime.dT * itermErrorRate;
 #ifdef USE_WING
         if (pidProfile->spa_mode[axis] != SPA_MODE_OFF) {
             // slowing down I-term change, or even making it zero if setpoint is high enough
