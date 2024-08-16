@@ -24,6 +24,8 @@
 
 #pragma once
 
+#include <math.h>
+
 #include "common/maths.h"
 
 typedef union {

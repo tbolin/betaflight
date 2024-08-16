@@ -624,4 +624,6 @@ extern "C" {
     float getMotorOutputLow(void) { return 1000.0; }
 
     float getMotorOutputHigh(void) { return 2047.0; }
+
+    void imuGetRotMatrix(fpMat33_t* rotMat) { UNUSED(rotMat); return; }
 }

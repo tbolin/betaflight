@@ -24,6 +24,7 @@
 #include "common/time.h"
 #include "common/maths.h"
 #include "pg/pg.h"
+#include "common/vector.h"
 
 // Exported symbols
 extern bool canUseGPSHeading;
@@ -49,8 +50,27 @@ typedef union {
 } attitudeEulerAngles_t;
 #define EULER_INITIALIZE  { { 0, 0, 0 } }
 
+typedef struct {
+    quaternion attitude;
+    fpVector3_t integralErr;
+} imuAhrsNominalState_t;
+
+typedef struct {
+    fpVector3_t rp;
+    float heading;
+} imuAhrsErrorState;
+
+typedef struct {
+    imuAhrsNominalState_t nominal;
+    imuAhrsErrorState error;
+    float rpEstimateCovariance;
+    // float headingEstimateCovariance;
+    float rpCovariance;
+    float headingGain;
+} imuAhrsState_t;
+
 extern attitudeEulerAngles_t attitude;
-extern float rMat[3][3];
+// extern float rMat[3][3];
 
 typedef struct imuConfig_s {
     uint16_t imu_dcm_kp;          // DCM filter proportional gain ( x 10000)
@@ -67,14 +87,20 @@ PG_DECLARE(imuConfig_t, imuConfig);
 typedef struct imuRuntimeConfig_s {
     float imuDcmKi;
     float imuDcmKp;
-    float gyro_noise_psd;   // gyro noise power spectral density, (deg/s)^2/s, i.e. gyro_noise_asd squared
-    float acc_covariance;
+    float gyroNoisePsd;   // gyro noise power spectral density, (rad/s)^2/s, i.e. gyro_noise_asd squared
+    float accCovariance;   // base accelerometer covariance rad^2
+    fpVector2_t north_ef;   // reference mag field vector heading due North in EF (2D ground plane projection) adjusted for magnetic declination
+    float smallAngleCosZ;
+    float throttleAngleScale;
+    int throttleAngleValue; 
 } imuRuntimeConfig_t;
 
 void imuConfigure(uint16_t throttle_correction_angle, uint8_t throttle_correction_value);
 
 float getCosTiltAngle(void);
-void getQuaternion(quaternion * q);
+void imuGetQuaternion(quaternion * q);
+void imuGetState(imuAhrsState_t* state);
+void imuGetRotMatrix(fpMat33_t* m);
 void imuUpdateAttitude(timeUs_t currentTimeUs);
 
 void imuInit(void);
